@@ -14,7 +14,6 @@
 #endif
 
 void print_loc( double * mat, int n_row, int n_col){
-
     for( int i = 0; i < n_row; i++ ){
         for ( int j = 0; j < n_col; j++) {
             fprintf( stdout, "%.6g ", mat[i*n_col+j] );
@@ -26,17 +25,17 @@ void print_loc( double * mat, int n_row, int n_col){
 void print_par( double * mat, int size, int rank, int npes, int flipped){
     int count;
     if( rank )
-        MPI_Send( mat, size, MPI_DOUBLE, 0, rank, MPI_COMM_WORLD );
+        MPI_Send( mat, size*(size/npes), MPI_DOUBLE, 0, rank, MPI_COMM_WORLD );
     else{
-        double * buf = (double *) calloc( size, sizeof(double) );
-        if (flipped) {print_loc( mat, size, 1 );}
-        else {print_loc( mat, 1, size );}
+        double * buf = (double *) calloc( size*(size/npes), sizeof(double) );
+        if (flipped) {print_loc( buf, size, size / npes );}
+        else {print_loc( buf, size / npes, size );}
 
 
         for( count = 1; count < npes; count ++){
-            MPI_Recv( buf, size, MPI_DOUBLE, count, count, MPI_COMM_WORLD, MPI_STATUS_IGNORE );
-            if (flipped) {print_loc( buf, size, 1 );}
-            else {print_loc( buf, 1, size );}
+            MPI_Recv( buf, size*(size/npes), MPI_DOUBLE, count, count, MPI_COMM_WORLD, MPI_STATUS_IGNORE );
+            if (flipped) {print_loc( buf, size, size / npes );}
+            else {print_loc( buf, size / npes, size );}
         }
         free( buf );
     }
@@ -47,9 +46,9 @@ int main( int argc, char * argv[] ){
     clock_t start;
     int npes, rank;
     double * mat_a, * mat_b, * res, * buf;
-    int n_cols, size_mata;
-    int n_rows, res_size, n_rows_loc;
-    int i;
+    long int n_cols, size_mata;
+    long int n_rows, res_size, n_rows_loc;
+    long int i, j, k;
     unsigned int size_buf;
     double alpha;
     double beta;
@@ -57,6 +56,7 @@ int main( int argc, char * argv[] ){
     MPI_Comm_size( MPI_COMM_WORLD, &npes );
     MPI_Comm_rank( MPI_COMM_WORLD, &rank );
     if (argc != 2) {
+        fprintf(stdout, "Please supply both the rows and columns as arguments!!!");
         return 1;
     }
 #ifdef USE_GPU
@@ -69,17 +69,17 @@ int main( int argc, char * argv[] ){
 #endif
     alpha = 1;
     beta = 0;
-    n_cols = atoi(argv[1]);
-    if (n_cols % npes != 0) {
+    n_rows = atoi(argv[1]);
+    n_cols = n_rows;
+    if (n_rows % npes != 0) {
         fprintf(stdout, "The size of the matrix must be divisible by the number "
                         "of processes!!!");
         return 1;
     }
-    n_rows_loc = n_cols / npes;
+    n_rows_loc = n_rows / npes;
     MPI_Barrier( MPI_COMM_WORLD );
     start = clock();
     fprintf(stdout, "%i 0 s | done initializing\n", rank);
-    n_rows = npes;
     size_mata = n_cols * n_rows_loc;
     mat_a = (double *) calloc( size_mata, sizeof(double) );
     size_buf = n_cols*n_rows;
@@ -88,27 +88,31 @@ int main( int argc, char * argv[] ){
     res_size = n_rows * n_rows_loc;
     res = (double *) calloc( res_size, sizeof(double) );
 
-    #pragma acc enter data create ( mat_a[ 0 : n_cols ], mat_b[ 0 : n_cols ], res[ 0 : res_size ], buf [ 0 : size_buf])
+    #pragma acc enter data create ( mat_a[ 0 : size_mata ], mat_b[ 0 : size_mata ], res[ 0 : res_size ], buf [ 0 : size_buf])
     fprintf(stdout, "%i %f s | data allocated\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
     // Fill the matrices with values
-    #pragma acc parallel loop collapse(1) present( mat_a )
-    for ( i = 0; i < n_cols; i++ ){
-        mat_a[i] = 0.02 * i + rank + 1;
+    #pragma acc parallel loop collapse(2) present( mat_a )
+    for (j = 0; j < n_rows_loc; j++) {
+        for ( i = 0; i < n_cols; i++ ){
+            mat_a[j*n_cols + i] = 0.02 * i + rank + 1 + j;
+        }
     }
 
     #pragma acc parallel loop collapse(1) present( mat_b )
-    for( i = 0; i < n_cols; i++ ){
-        mat_b[i] = 0.003 * (i + 1) + rank + 1;
+    for (j = 0; j < n_rows_loc; j++) {
+        for( i = 0; i < n_cols; i++ ){
+            mat_b[j*n_cols + i] = 0.003 * (i + 1) + rank + 1 + j;
+        }
     }
 
 #ifndef NDEBUG
-    #pragma acc update self ( mat_a[ 0 : n_cols ] )
+    #pragma acc update self ( mat_a[ 0 : size_mata ] )
     print_par( mat_a, n_cols, rank, npes, 0);
 #endif
     fprintf(stdout, "%i %f p | matricies filled with values\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
     //2) perform allgather
     #pragma acc host_data use_device(buf, mat_b)
-    MPI_Allgather(mat_b, n_cols, MPI_DOUBLE, buf, n_cols, MPI_DOUBLE, MPI_COMM_WORLD);
+    MPI_Allgather(mat_b, size_mata, MPI_DOUBLE, buf, size_mata, MPI_DOUBLE, MPI_COMM_WORLD);
     fprintf(stdout, "%i %f m | finished Allgather\n", rank, (double)(clock()-start+1)/CLOCKS_PER_SEC);
 
 #ifndef NDEBUG
@@ -121,24 +125,28 @@ int main( int argc, char * argv[] ){
 #ifdef NAIVE
     // local matrix matrix multiplication
     #pragma acc parallel loop collapse(2) present( mat_a, res, buf)
-    for(i=0;i<n_rows;i++){
-        for(int k=0;k<n_cols;k++) {
-            res[i] += mat_a[k]*buf[k+i*n_rows];
-        }
+    for (i = 0; i < n_rows_loc; ++i) {
+        for (j = 0; j < n_rows; ++j) {
+            for (k = 0; k < n_cols; ++k) {
+                res[i*n_cols+j] += mat_a[i*n_cols + k] * buf[k*n_rows+j];
+         }
+      }
     }
 #endif
 #ifdef USE_BLAS
     #pragma acc host_data use_device(buf, mat_a, res)
     cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                1, n_rows, n_cols, alpha, mat_a, 1, buf, n_cols, beta, res, 1);
+                n_rows_loc, n_rows, n_cols, alpha, mat_a, n_rows_loc, buf, n_cols, beta, res, n_rows_loc);
 #endif
 #ifdef USE_GPU
     #pragma acc host_data use_device(mat_a, buf, res)
-    status = cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, n_rows, n_cols, &alpha, mat_a, 1, buf, n_cols, &beta, res, 1);
+    status = cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n_rows_loc, n_rows, n_cols, &alpha, mat_a, n_rows_loc, buf, n_cols, &beta, res, n_rows_loc);
 #endif
     fprintf(stdout, "%i %f c | finished Matrix computation\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
+
     #pragma acc update self ( res[ 0 : res_size ] )
-    res[0] = 5;
+    fprintf(stdout, "final val: %d\n", res[0]);
+
     MPI_Finalize();
     return 0;
 }
