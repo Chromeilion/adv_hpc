@@ -89,7 +89,9 @@ int main( int argc, char * argv[] ){
     res = (double *) calloc( res_size, sizeof(double) );
 
     #pragma acc enter data create ( mat_a[ 0 : size_mata ], mat_b[ 0 : size_mata ], res[ 0 : res_size ], buf [ 0 : size_buf])
+
     fprintf(stdout, "%i %f s | data allocated\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
+
     // Fill the matrices with values
     #pragma acc parallel loop collapse(2) present( mat_a )
     for (j = 0; j < n_rows_loc; j++) {

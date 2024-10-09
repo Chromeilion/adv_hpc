@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=boost_usr_prod
-#SBATCH --job-name=matr_matr_scaling_benchmark
+#SBATCH --job-name=jacobi_scaling_benchmark
 #SBATCH --cpus-per-task=8
 #SBATCH --ntasks-per-node=4
 #SBATCH --ntasks=128
@@ -17,7 +17,7 @@ module load "$MPI_MOD"
 module load "$PYTHON_MOD"
 module load "$BLAS_MOD"
 
-CMAKE_BUILD_DIR="cmake-build-dir"
+CMAKE_BUILD_DIR="cmake-build-dir-jac"
 
 echo "Compiling naive algorithm:"
 
@@ -27,19 +27,7 @@ make
 cd ..
 
 echo "Testing naive algorithm:"
-python ex1/test_matr_mult.py -b $CMAKE_BUILD_DIR/ex_1 -o naive.json
-
-echo "Deleting the build directory:"
-rm -r $CMAKE_BUILD_DIR
-
-# BLAS
-cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=nvc -DUSE_BLAS=ON -S . -B $CMAKE_BUILD_DIR
-cd $CMAKE_BUILD_DIR || exit 1
-make
-cd ..
-
-echo "Testing BLAS algorithm:"
-python ex1/test_matr_mult.py -b $CMAKE_BUILD_DIR/ex_1 -o blas.json
+python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_naive.json
 
 echo "Deleting the build directory:"
 rm -r $CMAKE_BUILD_DIR
@@ -52,7 +40,7 @@ make
 cd ..
 
 echo "Testing CUDA algorithm:"
-python ex1/test_matr_mult.py -b $CMAKE_BUILD_DIR/ex_1 -o gpu.json
+python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_gpu.json
 
 echo "Deleting the build directory:"
 rm -r $CMAKE_BUILD_DIR

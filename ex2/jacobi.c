@@ -10,7 +10,8 @@
 #include <openacc.h>
 
 
-void print_loc( double * mat, int n_row, int n_col, bool skip, FILE *output){
+void print_loc(const double * mat, const int n_row, const int n_col,
+               const bool skip, FILE *output){
     int start;
     if(skip) {
         start = 1;
@@ -25,7 +26,8 @@ void print_loc( double * mat, int n_row, int n_col, bool skip, FILE *output){
     }
 }
 
-void print_par(double * mat, int n_rows, int n_cols, int rank, int npes, FILE *output) {
+void print_par(const double * mat, const int n_rows, const int n_cols,
+               const int rank, const int npes, FILE *output) {
     int count;
     if(rank)
         MPI_Send(mat, n_cols*n_rows, MPI_DOUBLE, 0, rank, MPI_COMM_WORLD);
@@ -50,6 +52,16 @@ void print_par(double * mat, int n_rows, int n_cols, int rank, int npes, FILE *o
     }
 }
 
+void do_j_op(double *mat_new, double *mat, const int i, const int j,
+             const int n_cols_global, double* error) {
+    mat_new[i*n_cols_global + j] =
+            0.25 * (mat[i*n_cols_global + j + 1] +
+                    mat[i*n_cols_global + j-1] +
+                    mat[(i-1)*n_cols_global + j] +
+                    mat[(i+1)*n_cols_global + j]);
+    *error = fmax(*error, fabs(mat_new[i*n_cols_global + j] - mat[i*n_cols_global + j]));
+}
+
 
 int main( int argc, char * argv[] ) {
     int size;
@@ -64,6 +76,9 @@ int main( int argc, char * argv[] ) {
 
     // For communicating with the process above and below me.
     MPI_Comm top_com, bot_com;
+    MPI_Request top_request, bottom_request;
+    int top_flag, bottom_flag;
+    bool top_done, bot_done;
 
     // Jacobi iter vars
     double error, tol;
@@ -106,16 +121,16 @@ int main( int argc, char * argv[] ) {
     #endif
 
     // Add 2 because of the static values on the edges
-    int n_cols_global = size+2;
-    int n_rows_global = size+2;
-    int i_col_max = n_cols_global-1;
-    int i_col_min = 1;
-    int top_color = rank+1;
-    int bot_color = rank;
-    int n_rows_loc = size / npes + 2;
-    int n_rows_inner = size / npes;
-    int i_row_max = n_rows_loc - 1;
-    int i_row_min = 1;
+    const int n_cols_global = size+2;
+    const int n_rows_global = size+2;
+    const int i_col_max = n_cols_global-1;
+    const int i_col_min = 1;
+    const int top_color = rank+1;
+    const int bot_color = rank;
+    const int n_rows_loc = size / npes + 2;
+    const int n_rows_inner = size / npes;
+    const int i_row_max = n_rows_loc - 1;
+    const int i_row_min = 1;
 
     fprintf(stdout, "%i 0 s | detected %i processes and %i rows per proc. "
                     "i_row_min/max are %i %i and col vals are %i %i, "
@@ -126,7 +141,7 @@ int main( int argc, char * argv[] ) {
     MPI_Comm_split(MPI_COMM_WORLD, top_color, rank, &top_com);
     MPI_Comm_split(MPI_COMM_WORLD, bot_color, rank, &bot_com);
 
-    int mat_size = n_cols_global*n_rows_loc;
+    const int mat_size = n_cols_global*n_rows_loc;
 
     // Wait for everyone to be ready for better timing.
     MPI_Barrier(MPI_COMM_WORLD);
@@ -150,25 +165,24 @@ int main( int argc, char * argv[] ) {
             mat[i*n_cols_global+j] = 0.5;
         }
     }
-    double scale_factor = 100/n_rows_global;
-    int global_start_idx = rank*n_rows_inner+1;
+    const double scale_factor = (double)100/((double)n_rows_global);
+    const int global_top_row = n_rows_inner*rank+1;
 
     fprintf(stdout, "%i %f s | start idx is %i with %i processes and %i rows "
                     "per process\n",
-            rank, (double)(clock()-start)/CLOCKS_PER_SEC, global_start_idx, npes,
+            rank, (double)(clock()-start)/CLOCKS_PER_SEC, global_top_row, npes,
             n_rows_inner);
 
     if (rank == npes-1) {
         // If we're the bottom process, we need to fill in the bottom section.
         #pragma acc parallel loop collapse(1) present(mat)
         for (i = 0; i < n_cols_global; i++) {
-            mat[(n_rows_loc-1)*n_cols_global + i] = scale_factor * (n_cols_global - i);
+            mat[(n_rows_loc-1)*n_cols_global + i] = (double)100 - scale_factor * (double)i;
         }
     }
     #pragma acc parallel loop collapse(1) present(mat)
     for (i = 0; i < n_rows_loc - 1; i++) {
-        double val = scale_factor * (global_start_idx + i);
-        mat[i*n_cols_global] = val;
+        mat[i*n_cols_global] = scale_factor * ((double)i+global_top_row);
     }
     #ifndef NDEBUG
     fflush(stdout);
@@ -186,28 +200,48 @@ int main( int argc, char * argv[] ) {
     while ( error > tol && iter < max_iter ) {
         // Jacobi iteration using MPI on the border values
         #pragma acc host_data use_device(mat, mat_new)
-        MPI_Allreduce(&mat[i_row_min*n_cols_global],
-                      &mat_new[i_row_min*n_cols_global],
-                      n_cols_global, MPI_DOUBLE,
-                      MPI_SUM, top_com);
+        MPI_Iallreduce(
+                &mat[i_row_min*n_cols_global],
+                &mat_new[i_row_min*n_cols_global],
+                n_cols_global, MPI_DOUBLE,
+                MPI_SUM, top_com, &top_request);
 
         #pragma acc host_data use_device(mat, mat_new)
-        MPI_Allreduce(&mat[(i_row_max-1)*n_cols_global],
-                      &mat_new[(i_row_max-1)*n_cols_global], n_cols_global,
-                      MPI_DOUBLE, MPI_SUM, bot_com);
-        fprintf(stdout, "%i %f m | mpi allreduce complete\n",
-                rank, (double)(clock()-start)/CLOCKS_PER_SEC);
+        MPI_Iallreduce(
+                &mat[(i_row_max-1)*n_cols_global],
+                &mat_new[(i_row_max-1)*n_cols_global],
+                n_cols_global,
+                MPI_DOUBLE, MPI_SUM, bot_com, &bottom_request);
+
         // Regular Jacobi iteration loop
         error = 0;
         #pragma acc parallel loop collapse(2) present(mat, mat_new) reduction(max:error)
-        for (i = i_row_min; i < i_row_max; i++) {
+        for (i = i_row_min+1; i < i_row_max-1; i++) {
             for (j = i_col_min; j < i_col_max; j++) {
-                double right = mat[i*n_cols_global + j + 1];
-                double left = mat[i*n_cols_global + j-1];
-                double up = mat[(i-1)*n_cols_global + j];
-                double down = mat[(i+1)*n_cols_global + j];
-                mat_new[i*n_cols_global + j] = 0.25 * (right + left + up + down);
-                error = fmax(error, fabs(mat_new[i*n_cols_global + j] - mat[i*n_cols_global + j]));
+                do_j_op(mat_new, mat, i, j, n_cols_global, &error);
+            }
+        }
+        top_flag = 0;
+        bottom_flag = 0;
+        top_done = 0;
+        bot_done = 0;
+        while (!top_done || !bot_done) {
+            MPI_Test(&top_request, &top_flag, MPI_STATUS_IGNORE);
+            MPI_Test(&bottom_request, &bottom_flag, MPI_STATUS_IGNORE);
+
+            if(top_flag && !top_done) {
+                #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
+                for (j = i_col_min; j < i_col_max; j++) {
+                    do_j_op(mat_new, mat, i_row_min, j, n_cols_global, &error);
+                }
+                top_done = 1;
+            }
+            if (bottom_flag && !bot_done) {
+                #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
+                for (j = i_col_min; j < i_col_max; j++) {
+                    do_j_op(mat_new, mat, i_row_max-1, j, n_cols_global, &error);
+                }
+                bot_done = 1;
             }
         }
         #pragma acc parallel loop collapse(2) present(mat, mat_new)
@@ -216,8 +250,6 @@ int main( int argc, char * argv[] ) {
                 mat[i*n_cols_global + j] = mat_new[i*n_cols_global + j];
             }
         }
-        fprintf(stdout, "%i %f c | Jacobi iteration complete\n",
-                rank, (double)(clock()-start)/CLOCKS_PER_SEC);
         iter += 1;
     }
 
