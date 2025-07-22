@@ -10,19 +10,6 @@ from collections import defaultdict
 BOOST_N_CPU_CORES = 32
 BOOST_N_GPUS = 4
 
-# Weak scaling consts
-WEAK_SCALE_RATIO_SIZE = 128
-WEAK_SCALE_RATIO_ITER = 1024
-WEAK_SCALE_RATIO_LENIENCE = 0
-WEAK_SCALE_RATIO_BASE_ITER = 1000
-WEAK_SCALE_RATIO_BASE_SIZE = 10000
-
-# Weak scaling consts
-STRONG_SCALE_SIZE_BIG = 2**14
-STRONG_SCALE_SIZE_SMALL = 2**11
-STRONG_SCALE_ITER = 2**10
-STRONG_SCALE_LENIENCE = 0
-
 
 @dataclass
 class RunParams:
@@ -65,6 +52,11 @@ class MatRunner:
 
 
 def test_weak(run_params: RunParams, runner: MatRunner) -> dict[int, str]:
+    # Weak scaling consts
+    WEAK_SCALE_RATIO_SIZE = 512
+    WEAK_SCALE_RATIO_LENIENCE = 0
+    WEAK_SCALE_RATIO_BASE_ITER = 1024
+
     print("Testing weak scaling", flush=True)
     test_res = defaultdict(dict)
     x = run_params.max_nodes
@@ -74,16 +66,11 @@ def test_weak(run_params: RunParams, runner: MatRunner) -> dict[int, str]:
         proc_list.append(int(root))
         x = root
     for n_nodes in proc_list:
-        size = n_nodes*WEAK_SCALE_RATIO_SIZE
-        iters = n_nodes*WEAK_SCALE_RATIO_ITER
+        size = n_nodes*4*WEAK_SCALE_RATIO_SIZE
 
         print(f"Testing with {n_nodes} nodes and matrix size {size}", flush=True)
         test_res["weak_size"][n_nodes] = runner.run(
             size, n_nodes, WEAK_SCALE_RATIO_BASE_ITER, WEAK_SCALE_RATIO_LENIENCE)[0]
-
-        print(f"Testing with {n_nodes} nodes and matrix iter {iters}", flush=True)
-        test_res["weak_iter"][n_nodes] = runner.run(
-            WEAK_SCALE_RATIO_BASE_SIZE, n_nodes, iters, WEAK_SCALE_RATIO_LENIENCE)[0]
 
     return test_res
 
@@ -103,7 +90,16 @@ def test_strong(run_params: RunParams, runner: MatRunner, size: int, iters, leni
     return test_res
 
 
-def main(binary_loc: str, output_file: str):
+def main(binary_loc: str, output_file: str, g: bool):
+    # Strong scaling consts
+    STRONG_SCALE_SIZE_BIG = 2**15
+    STRONG_SCALE_SIZE_SMALL = 2**14
+    STRONG_SCALE_ITER = 1024
+    STRONG_SCALE_LENIENCE = 0
+
+    if g:
+        STRONG_SCALE_SIZE_BIG = 80_000
+        STRONG_SCALE_SIZE_SMALL = 2**15
     print("Running matrix multiplication scaling tests", flush=True)
     run_params = RunParams()
     runner = MatRunner(binary_loc, run_params)
@@ -121,5 +117,6 @@ if __name__ == "__main__":
     parser = ap.ArgumentParser()
     parser.add_argument("-b", "--binary", action="store", required=True)
     parser.add_argument("-o", "--output-file", action="store", required=True)
+    parser.add_argument("-g", action="store_true")
     args = parser.parse_args()
-    main(args.binary, args.output_file)
+    main(args.binary, args.output_file, args.g)

@@ -9,6 +9,12 @@ from collections import defaultdict
 
 SAVEFILES = ["naive.json", "blas.json", "gpu.json"]
 
+plt.style.use('seaborn-v0_8-paper')
+plt.rc('text', usetex=True)
+plt.rc('text.latex')
+plt.rcParams["font.family"] = "Times New Roman"
+plt.xticks(fontsize=14, rotation=90)
+
 def make_plots(base_title: str, res: dict[str, dict[str, float]],
                output_dir: Path) -> None:
     x = list(res.keys())
@@ -28,10 +34,10 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
     fig.savefig(saveloc)
 
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_prop.png'
-    all_sum = serial + mpi + comp
+    all_sum = (serial + mpi + comp)[::-1]
     fig, ax = plt.subplots()
-    ax.stackplot(x, serial / all_sum, mpi / all_sum, comp / all_sum,
-                 labels=["serial", "mpi", "Matrix Mult."])
+    ax.stackplot(list(reversed(x)), serial[::-1] / all_sum, mpi[::-1] / all_sum, comp[::-1] / all_sum,
+                 labels=["Serial", "MPI", "Matrix Mult."])
     ax.set_title(f"{base_title} proportion")
     fig.legend()
     fig.savefig(saveloc)
@@ -54,8 +60,8 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) ->
     ax_s.xaxis.set_ticks(x)
     ax_w.xaxis.set_ticks(x)
     for alg, s_res in all_y.items():
-        ax_w.plot(x, s_res["weak"], label=alg)
-        ax_s.plot(x, s_res["strong"], label=alg)
+        ax_w.plot([int(i) for i in list(all_res['gpu']['weak_N2'].keys())], s_res["weak_N2"], label=alg)
+        ax_s.plot(x, s_res["strong_8192"], label=alg)
 
     ax_s.set_title("Strong Scaling Time Taken")
     ax_w.set_title("Weak Scaling Time Taken")

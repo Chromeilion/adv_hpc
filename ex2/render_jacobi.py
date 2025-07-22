@@ -48,11 +48,11 @@ def create_frame(data):
     return Image.fromarray((colored_data[:, :, :3] * 255).astype(np.uint8))
 
 
-def save_frame(saveloc, bin_loc, n_iters):
+def save_frame(bin_loc, n_iters):
     runner = JacRunner(bin_loc)
-    n_iters = (MAX_ITERS / N_FRAMES) * n_iters
+    n_iters_t = (MAX_ITERS / N_FRAMES) * n_iters
     with tempfile.TemporaryDirectory() as tmp:
-        runner.run(IM_SIZE, n_iters, LENIENCE, tmp)
+        runner.run(IM_SIZE, n_iters_t, LENIENCE, tmp)
         with open(Path(tmp)/"jacobi_output.txt", "r") as f:
             lines = f.readlines()
         data = np.array(
@@ -64,7 +64,7 @@ def save_frame(saveloc, bin_loc, n_iters):
 def main(bin_loc: str):
     saveloc = Path(SAVELOC)
     saveloc.mkdir(exist_ok=True)
-    save_frame_p = partial(save_frame, saveloc, bin_loc)
+    save_frame_p = partial(save_frame, bin_loc)
     iters = list(range(N_FRAMES))
 
     with Pool(1) as p:

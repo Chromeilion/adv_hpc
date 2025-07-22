@@ -77,8 +77,6 @@ int main( int argc, char * argv[] ) {
     // For communicating with the process above and below me.
     MPI_Comm top_com, bot_com;
     MPI_Request top_request, bottom_request;
-    int top_flag, bottom_flag;
-    bool top_done, bot_done;
 
     // Jacobi iter vars
     double error, tol;
@@ -221,29 +219,19 @@ int main( int argc, char * argv[] ) {
                 do_j_op(mat_new, mat, i, j, n_cols_global, &error);
             }
         }
-        top_flag = 0;
-        bottom_flag = 0;
-        top_done = 0;
-        bot_done = 0;
-        while (!top_done || !bot_done) {
-            MPI_Test(&top_request, &top_flag, MPI_STATUS_IGNORE);
-            MPI_Test(&bottom_request, &bottom_flag, MPI_STATUS_IGNORE);
 
-            if(top_flag && !top_done) {
-                #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
-                for (j = i_col_min; j < i_col_max; j++) {
-                    do_j_op(mat_new, mat, i_row_min, j, n_cols_global, &error);
-                }
-                top_done = 1;
-            }
-            if (bottom_flag && !bot_done) {
-                #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
-                for (j = i_col_min; j < i_col_max; j++) {
-                    do_j_op(mat_new, mat, i_row_max-1, j, n_cols_global, &error);
-                }
-                bot_done = 1;
-            }
+        // Wait for our Allreduce's to complete
+        MPI_Wait(&top_request, MPI_STATUS_IGNORE);
+        MPI_Wait(&bottom_request, MPI_STATUS_IGNORE);
+
+        // Update the top and bottom rows since we have what we need now
+        #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
+        for (j = i_col_min; j < i_col_max; j++) {
+            do_j_op(mat_new, mat, i_row_min, j, n_cols_global, &error);
+            do_j_op(mat_new, mat, i_row_max-1, j, n_cols_global, &error);
         }
+
+        // Write into the new matrix
         #pragma acc parallel loop collapse(2) present(mat, mat_new)
         for (i = i_row_min; i < i_row_max; i++) {
             for (j = i_col_min; j < i_col_max; j++) {

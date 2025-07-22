@@ -4,8 +4,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --ntasks-per-node=4
 #SBATCH --ntasks=128
-#SBATCH --mem=300gb
-#SBATCH --time=00:30:00
+#SBATCH --mem=480gb
+#SBATCH --time=01:30:00
 #SBATCH --output=./logs/ex1test%j.out
 #SBATCH --gpus-per-task=1
 set -a; source .env set +a
@@ -40,7 +40,7 @@ make
 cd ..
 
 echo "Testing CUDA algorithm:"
-python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_gpu.json
+python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_gpu.json -g
 
 echo "Deleting the build directory:"
 rm -r $CMAKE_BUILD_DIR
