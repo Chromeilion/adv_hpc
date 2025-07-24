@@ -21,6 +21,7 @@ def parse_output(mat_out: str) -> dict[str, float]:
         if len(split_info) < 3:
             continue
         p_no, msg_time, msg_type = split_info[0], split_info[1], split_info[-1]
+        p_no = int(p_no) + 1
         proc_outs[p_no].append((msg_time, msg_type))
 
     for p_no, msg_list in proc_outs.items():
@@ -44,7 +45,7 @@ def parse_output(mat_out: str) -> dict[str, float]:
                 prev_msg_type = msg_type
                 prev_time = float(msg_time)
 
-    return {"serial": serial, "mpi": mpi, "comp": comp}
+    return {"serial": serial / p_no, "mpi": mpi / p_no, "comp": comp / p_no}
 
 
 def parse_data(data):
@@ -78,8 +79,8 @@ def parse_data(data):
 
 def make_plots(base_title: str, res: dict[str, dict[str, float]],
                output_dir: Path) -> None:
-    x = list(res.keys())
-    items = list(res.values())
+    x = [int(i) for i in reversed(res.keys())]
+    items = list(reversed(res.values()))
     serial = np.array([i["serial"] for i in items])
     mpi = np.array([i["mpi"] for i in items])
     comp = np.array([i["comp"] for i in items])
@@ -88,6 +89,7 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
     ax.plot(x, serial, label="Serial")
     ax.plot(x, mpi, label="MPI")
     ax.plot(x, comp, label="Matrix Op.")
+    ax.xaxis.set_ticks(x)
     fig.legend()
     ax.set_title(base_title)
     ax.set_ylabel(f"Time (seconds)")
@@ -121,7 +123,7 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) ->
     ax_s.xaxis.set_ticks(x)
     ax_w.xaxis.set_ticks(x)
     for alg, s_res in all_y.items():
-        ax_w.plot([int(i) for i in list(all_res['GPU']['weak'].keys())], s_res["weak"], label=alg)
+        ax_w.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], s_res["weak"], label=alg)
         ax_s.plot(x, s_res["strong large"], label=alg)
     ax_s.set_title("Strong Scaling Time Taken")
     ax_w.set_title("Weak Scaling Time Taken")
