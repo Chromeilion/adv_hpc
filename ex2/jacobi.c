@@ -9,8 +9,7 @@
 #include <math.h>
 #include <openacc.h>
 
-
-void print_loc(const double * mat, const int n_row, const int n_col,
+void print_loc(const float * mat, const int n_row, const int n_col,
                const bool skip, FILE *output){
     int start;
     if(skip) {
@@ -26,13 +25,13 @@ void print_loc(const double * mat, const int n_row, const int n_col,
     }
 }
 
-void print_par(const double * mat, const int n_rows, const int n_cols,
+void print_par(const float * mat, const int n_rows, const int n_cols,
                const int rank, const int npes, FILE *output) {
     int count;
     if(rank)
         MPI_Send(mat, n_cols*n_rows, MPI_DOUBLE, 0, rank, MPI_COMM_WORLD);
     else{
-        double * buf = (double *) calloc(n_cols*n_rows, sizeof(double));
+        float * buf = (float *) calloc(n_cols*n_rows, sizeof(float));
         if (npes == 1) {
             print_loc(mat, n_rows, n_cols, 0, output);
         } else {
@@ -52,8 +51,8 @@ void print_par(const double * mat, const int n_rows, const int n_cols,
     }
 }
 
-void do_j_op(double *mat_new, double *mat, const int i, const int j,
-             const int n_cols_global, double* error) {
+inline void do_j_op(float *mat_new, float *mat, const int i, const int j,
+             const int n_cols_global, float* error) {
     mat_new[i*n_cols_global + j] =
             0.25 * (mat[i*n_cols_global + j + 1] +
                     mat[i*n_cols_global + j-1] +
@@ -62,16 +61,57 @@ void do_j_op(double *mat_new, double *mat, const int i, const int j,
     *error = fmax(*error, fabs(mat_new[i*n_cols_global + j] - mat[i*n_cols_global + j]));
 }
 
+inline void swap_ptrs(float** a, float** b) {
+    float* temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+float im2col_get_pixel(float *im, int height, int width, int channels,
+                       int row, int col, int channel, int pad)
+{
+    row -= pad;
+    col -= pad;
+
+    if (row < 0 || col < 0 ||
+        row >= height || col >= width) return 0;
+    return im[col + width*(row + height*channel)];
+}
+
+//From Berkeley Vision's Caffe!
+//https://github.com/BVLC/caffe/blob/master/LICENSE
+void im2col(float* data_im,
+            int channels,  int height,  int width,
+            int ksize,  int stride, int pad, float* data_col)
+{
+    int c,h,w;
+    int height_col = (height + 2*pad - ksize) / stride + 1;
+    int width_col = (width + 2*pad - ksize) / stride + 1;
+
+    int channels_col = channels * ksize * ksize;
+    for (c = 0; c < channels_col; ++c) {
+        int w_offset = c % ksize;
+        int h_offset = (c / ksize) % ksize;
+        int c_im = c / ksize / ksize;
+        for (h = 0; h < height_col; ++h) {
+            for (w = 0; w < width_col; ++w) {
+                int im_row = h_offset + h * stride;
+                int im_col = w_offset + w * stride;
+                int col_index = (c * height_col + h) * width_col + w;
+                data_col[col_index] = im2col_get_pixel(data_im, height, width, channels,
+                                                       im_row, im_col, c_im, pad);
+            }
+        }
+    }
+}
 
 int main( int argc, char * argv[] ) {
     int size;
-    // Regular MPI WORLD communicator
     int npes, rank;
 
-    // Timer
-    double start;
+    double start_time;
 
-    double *mat, *mat_new;
+    float *mat, *mat_new, *colbuf;
     int i, j;
 
     // For communicating with the process above and below me.
@@ -79,13 +119,12 @@ int main( int argc, char * argv[] ) {
     MPI_Request top_request, bottom_request;
 
     // Jacobi iter vars
-    double error, tol;
+    float error, tol;
     int iter, max_iter;
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &npes);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
 
     if (argc < 4) {
         fprintf(stdout, "The size of the matrix and max iters needs to be "
@@ -130,6 +169,12 @@ int main( int argc, char * argv[] ) {
     const int i_row_max = n_rows_loc - 1;
     const int i_row_min = 1;
 
+    // Convolution parameters
+    const int ksize = 3;
+    const int stride = 1;
+    const int pad = 1;
+    const int channels = 1;
+
     fprintf(stdout, "%i 0 s | detected %i processes and %i rows per proc. "
                     "i_row_min/max are %i %i and col vals are %i %i, "
                     "n_cols_global is %i\n",
@@ -140,22 +185,26 @@ int main( int argc, char * argv[] ) {
     MPI_Comm_split(MPI_COMM_WORLD, bot_color, rank, &bot_com);
 
     const int mat_size = n_cols_global*n_rows_loc;
+    // We don't need to add 2 to height col because it's already factored in.
+    int height_col = (n_rows_loc - ksize) / stride + 1;
+    int width_col = (n_cols_global + 2 - ksize) / stride + 1;
+    int colbuf_size = ksize * ksize * height_col * width_col;
 
-    // Wait for everyone to be ready for better timing.
     MPI_Barrier(MPI_COMM_WORLD);
 
     fprintf(stdout, "%i 0 s | finished initialization\n", rank);
-    start = clock();
+    start_time = clock();
 
 
-    mat = (double *)calloc(mat_size, sizeof(double));
-    mat_new = (double *)calloc(mat_size, sizeof(double));
+    mat = (float *)calloc(mat_size, sizeof(float));
+    mat_new = (float *)calloc(mat_size, sizeof(float));
+    colbuf = (float *)calloc(colbuf_size, sizeof(float));
 
     // Switch to the accelerator
     #pragma acc enter data create(mat[0:mat_size], mat_new[0:mat_size])
 
     fprintf(stdout, "%i %f s | initialized local matrix memory\n",
-            rank, (double)(clock()-start)/CLOCKS_PER_SEC);
+            rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
 
     #pragma acc parallel loop collapse(2) present(mat)
     for (i = i_row_min; i < i_row_max; i++) {
@@ -163,25 +212,29 @@ int main( int argc, char * argv[] ) {
             mat[i*n_cols_global+j] = 0.5;
         }
     }
-    const double scale_factor = (double)100/((double)n_rows_global);
+    const float scale_factor = (float)100/((float)n_rows_global);
     const int global_top_row = n_rows_inner*rank+1;
 
     fprintf(stdout, "%i %f s | start idx is %i with %i processes and %i rows "
                     "per process\n",
-            rank, (double)(clock()-start)/CLOCKS_PER_SEC, global_top_row, npes,
+            rank, (double)(clock()-start_time)/CLOCKS_PER_SEC, global_top_row, npes,
             n_rows_inner);
 
     if (rank == npes-1) {
         // If we're the bottom process, we need to fill in the bottom section.
         #pragma acc parallel loop collapse(1) present(mat)
         for (i = 0; i < n_cols_global; i++) {
-            mat[(n_rows_loc-1)*n_cols_global + i] = (double)100 - scale_factor * (double)i;
+            mat[(n_rows_loc-1)*n_cols_global + i] = (float)100 - scale_factor * (float)i;
+            mat_new[(n_rows_loc-1)*n_cols_global + i] = (float)100 - scale_factor * (float)i;
         }
     }
     #pragma acc parallel loop collapse(1) present(mat)
     for (i = 0; i < n_rows_loc - 1; i++) {
-        mat[i*n_cols_global] = scale_factor * ((double)i+global_top_row);
+        mat[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
+        mat_new[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
     }
+    // We subtract two here because the padding is already factored in
+    im2col(mat, channels, n_rows_loc-2, n_cols_global-2, ksize, stride, pad, colbuf);
     #ifndef NDEBUG
     fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
@@ -191,11 +244,13 @@ int main( int argc, char * argv[] ) {
     #endif
 
     fprintf(stdout, "%i %f s | initialized local matrix values\n",
-            rank, (double)(clock()-start)/CLOCKS_PER_SEC);
+            rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
 
     error = INFINITY;
     iter = 0;
+    swap_ptrs(&mat, &mat_new);
     while ( error > tol && iter < max_iter ) {
+        swap_ptrs(&mat, &mat_new);
         // Jacobi iteration using MPI on the border values
         #pragma acc host_data use_device(mat, mat_new)
         MPI_Iallreduce(
@@ -225,24 +280,16 @@ int main( int argc, char * argv[] ) {
         MPI_Wait(&bottom_request, MPI_STATUS_IGNORE);
 
         // Update the top and bottom rows since we have what we need now
-        #pragma acc parallel loop collapse(1) present(mat, mat_new) reduction(max:error)
+        #pragma acc parallel loop independent present(mat, mat_new) reduction(max:error)
         for (j = i_col_min; j < i_col_max; j++) {
             do_j_op(mat_new, mat, i_row_min, j, n_cols_global, &error);
             do_j_op(mat_new, mat, i_row_max-1, j, n_cols_global, &error);
-        }
-
-        // Write into the new matrix
-        #pragma acc parallel loop collapse(2) present(mat, mat_new)
-        for (i = i_row_min; i < i_row_max; i++) {
-            for (j = i_col_min; j < i_col_max; j++) {
-                mat[i*n_cols_global + j] = mat_new[i*n_cols_global + j];
-            }
         }
         iter += 1;
     }
 
     fprintf(stdout, "%i %f s | done calculating Jacobi with an error of %f\n",
-            rank, (double)(clock()-start)/CLOCKS_PER_SEC, error);
+            rank, (double)(clock()-start_time)/CLOCKS_PER_SEC, error);
 
     #pragma acc exit data copyout(mat[0:mat_size]) delete(mat_new) finalize
 

@@ -16,21 +16,26 @@ plt.rcParams["font.family"] = "Times New Roman"
 plt.xticks(fontsize=14, rotation=90)
 
 def make_plots(base_title: str, res: dict[str, dict[str, float]],
-               output_dir: Path) -> None:
-    x = [int(i) for i in reversed(res.keys())]
+               output_dir: Path, eff: bool = False) -> None:
+    x = np.array([int(i) for i in reversed(res.keys())])
     items = list(reversed(res.values()))
     serial = np.array([i["serial"] for i in items])
     mpi = np.array([i["mpi"] for i in items])
     comp = np.array([i["comp"] for i in items])
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_time.png'
     fig, ax = plt.subplots()
-    ax.plot(x, serial, label="Serial")
-    ax.plot(x, mpi, label="MPI")
-    ax.plot(x, comp, label="Matrix Mult.")
-    ax.xaxis.set_ticks(x)
+    if eff:
+        ax.plot(x, (serial+mpi+comp)[0]/(serial+mpi+comp))
+        ax.xaxis.set_ticks(x)
+        ax.set_ylabel(f"Efficiency")
+    else:
+        ax.plot(x, serial, label="Serial")
+        ax.plot(x, mpi, label="MPI")
+        ax.plot(x, comp, label="Matrix Mult.")
+        ax.xaxis.set_ticks(x)
+        ax.set_ylabel(f"Time (seconds)")
     fig.legend()
     ax.set_title(base_title)
-    ax.set_ylabel(f"Time (seconds)")
     ax.set_xlabel(f"Processes")
     fig.savefig(saveloc)
 
@@ -49,7 +54,7 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) ->
     all_y = defaultdict(dict)
     for alg, res in all_res.items():
         for scale_type, n_proc_res in res.items():
-            items = [parse_output(i) for i in list(n_proc_res.values())]
+            items = [i for i in list(n_proc_res.values())]
             serial = np.array([i["serial"] for i in items])
             mpi = np.array([i["mpi"] for i in items])
             comp = np.array([i["comp"] for i in items])
@@ -58,22 +63,29 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) ->
     x = [int(i) for i in list(n_proc_res.keys())]
     fig_s, ax_s = plt.subplots()
     fig_w, ax_w = plt.subplots()
+    fig_we, ax_we = plt.subplots()
     ax_s.xaxis.set_ticks(x)
     ax_w.xaxis.set_ticks(x)
+    ax_we.xaxis.set_ticks(x)
     for alg, s_res in all_y.items():
-        ax_w.plot([int(i) for i in list(all_res['gpu']['weak_N2'].keys())], s_res["weak_N2"], label=alg)
-        ax_s.plot(x, s_res["strong_8192"], label=alg)
-
+        ax_w.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], s_res["weak"], label=alg)
+        ax_s.plot(x, s_res["strong large"], label=alg)
+        ax_we.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], np.array(s_res["weak"]).min()/np.array(s_res["weak"]), label=alg)
     ax_s.set_title("Strong Scaling Time Taken")
     ax_w.set_title("Weak Scaling Time Taken")
+    ax_we.set_title("Weak Scaling Efficiency")
     ax_s.set_xlabel("No. Proceses")
     ax_w.set_xlabel("No. Proceses")
+    ax_we.set_xlabel("No. Proceses")
     ax_s.set_ylabel("Total Time Taken (seconds)")
     ax_w.set_ylabel("Total Time Taken (seconds)")
+    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
+    fig_we.legend()
     fig_s.legend()
     fig_w.legend()
     fig_s.savefig(saveloc/"alg_scaling_strong.png")
     fig_w.savefig(saveloc/"alg_scaling_weak.png")
+    fig_we.savefig(saveloc/"alg_scaling_weak_efficiency.png")
 
 
 
@@ -128,6 +140,10 @@ def main(output_folder: PathLike | str):
         all_res[alg_type] = res
         for scaling_type, scaling_res in res.items():
             parsed = { key: parse_output(val) for key, val in scaling_res.items() }
+            if scaling_type == "weak_N2":
+                make_plots(f"{alg_type} weak efficiency", parsed, out_folder, eff=True)
+            else:
+                make_plots(f"{alg_type} {scaling_type} speedup", parsed, out_folder, eff=True)
             make_plots(f"{alg_type} {scaling_type} scaling", parsed, out_folder)
 
     plot_time_taken(all_res, out_folder)

@@ -78,7 +78,7 @@ def parse_data(data):
     return all_parsed_data
 
 def make_plots(base_title: str, res: dict[str, dict[str, float]],
-               output_dir: Path) -> None:
+               output_dir: Path, eff: bool = False) -> None:
     x = [int(i) for i in reversed(res.keys())]
     items = list(reversed(res.values()))
     serial = np.array([i["serial"] for i in items])
@@ -86,13 +86,18 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
     comp = np.array([i["comp"] for i in items])
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_time.png'
     fig, ax = plt.subplots()
-    ax.plot(x, serial, label="Serial")
-    ax.plot(x, mpi, label="MPI")
-    ax.plot(x, comp, label="Matrix Op.")
-    ax.xaxis.set_ticks(x)
+    if eff:
+        ax.plot(x, (serial+mpi+comp)[0]/(serial+mpi+comp))
+        ax.xaxis.set_ticks(x)
+        ax.set_ylabel(f"Efficiency")
+    else:
+        ax.plot(x, serial, label="Serial")
+        ax.plot(x, mpi, label="MPI")
+        ax.plot(x, comp, label="Matrix Op.")
+        ax.xaxis.set_ticks(x)
+        ax.set_ylabel(f"Time (seconds)")
     fig.legend()
     ax.set_title(base_title)
-    ax.set_ylabel(f"Time (seconds)")
     ax.set_xlabel(f"Processes")
     fig.savefig(saveloc)
 
@@ -120,25 +125,38 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) ->
     x = [int(i) for i in list(n_proc_res.keys())]
     fig_s, ax_s = plt.subplots()
     fig_w, ax_w = plt.subplots()
+    fig_we, ax_we = plt.subplots()
     ax_s.xaxis.set_ticks(x)
     ax_w.xaxis.set_ticks(x)
+    ax_we.xaxis.set_ticks(x)
     for alg, s_res in all_y.items():
         ax_w.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], s_res["weak"], label=alg)
         ax_s.plot(x, s_res["strong large"], label=alg)
+        ax_we.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], np.array(s_res["weak"]).min()/np.array(s_res["weak"]), label=alg)
     ax_s.set_title("Strong Scaling Time Taken")
     ax_w.set_title("Weak Scaling Time Taken")
+    ax_we.set_title("Weak Scaling Efficiency")
     ax_s.set_xlabel("No. Proceses")
     ax_w.set_xlabel("No. Proceses")
+    ax_we.set_xlabel("No. Proceses")
     ax_s.set_ylabel("Total Time Taken (seconds)")
     ax_w.set_ylabel("Total Time Taken (seconds)")
+    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
+    fig_we.legend()
     fig_s.legend()
     fig_w.legend()
     fig_s.savefig(saveloc/"alg_scaling_strong.png")
     fig_w.savefig(saveloc/"alg_scaling_weak.png")
+    fig_we.savefig(saveloc/"alg_scaling_weak_efficiency.png")
 
 def plot_data(parsed_data, compute_mode, out_folder):
     for scaling_type, data in parsed_data.items():
+        if scaling_type == "weak":
+            make_plots(f"{compute_mode} {scaling_type} efficiency", data["parsed"], out_folder, eff=True)
+        else:
+            make_plots(f"{compute_mode} {scaling_type} speedup", data["parsed"], out_folder, eff=True)
         make_plots(f"{compute_mode} {scaling_type} scaling", data["parsed"], out_folder)
+
 
 def main():
     output_path = Path("./figs")
