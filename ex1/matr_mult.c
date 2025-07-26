@@ -48,7 +48,7 @@ int main( int argc, char * argv[] ){
     double * mat_a, * mat_b, * res, * buf;
     long int n_cols, size_mata;
     long int n_rows, res_size, n_rows_loc;
-    long int i, j, k;
+    long int i, j;
     unsigned int size_buf;
     double alpha;
     double beta;
