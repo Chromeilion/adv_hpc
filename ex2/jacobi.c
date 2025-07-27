@@ -98,11 +98,12 @@ void im2col(float* data_im, int height,  int width,
     int width_col = (width + 2*pad - ksize) / stride + 1;
 
     int channels_col = ksize * ksize;
-    #pragma acc parallel loop independent collapse(1) present(data_im, data_col, topfill, botfill, leftfill)
     for (c = 0; c < channels_col; ++c) {
         w_offset = c % ksize;
         h_offset = (c / ksize) % ksize;
         c_im = c / ksize / ksize;
+#pragma acc parallel loop collapse(2) independent present(data_im, data_col, \
+    topfill, botfill, leftfill)
         for (h = 0; h < height_col; ++h) {
             for (w = 0; w < width_col; ++w) {
                 im_row = h_offset + h * stride;
@@ -127,21 +128,24 @@ void fill_matr(float *mat, int rows, int cols, float val) {
 
 #ifdef USE_GPU
 void convolve(float *mat, float *res, float *kernel, float *colbuf,
-              int n_rows, int n_cols, int colbuf_cols, int colbuf_rows,
+              int n_rows, int n_cols, int colbuf_rows,
               int ksize, int stride, int pad, float alpha, float beta,
               float *topfill, float *botfill, float *leftfill, cublasHandle_t handle) {
     // Prepare input image for GEMM
     im2col(mat, n_rows, n_cols, ksize, stride, pad, colbuf,
            topfill, botfill, leftfill);
+    int m, n, k;
+    m = 1;
+    n = colbuf_rows;
+    k = ksize * ksize;
     #pragma acc host_data use_device(colbuf, kernel, res)
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, colbuf_rows,
-                ksize*ksize, &alpha, kernel, ksize*ksize, colbuf, colbuf_rows, &beta,
-                res, colbuf_rows);
+    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, colbuf, n,
+                kernel, k, &beta, res, n);
 }
 #endif
 #ifdef USE_BLAS
 void convolve(float *mat, float *res, float *kernel, float *colbuf,
-              int n_rows, int n_cols, int colbuf_cols, int colbuf_rows,
+              int n_rows, int n_cols, int colbuf_rows,
               int ksize, int stride, int pad, float alpha, float beta,
               float *topfill, float *botfill, float *leftfill) {
     // Prepare input image for GEMM
@@ -160,7 +164,7 @@ int main( int argc, char * argv[] ) {
 
     double start_time;
 
-    float *mat, *mat_new, *colbuf, *colbuf_s, *botpad, *toppad, *leftpad, *kernel;
+    float *mat, *mat_new, *colbuf, *botpad, *toppad, *leftpad, *kernel;
     int i;
 
     // For communicating with the process above and below me.
@@ -232,8 +236,6 @@ int main( int argc, char * argv[] ) {
     const int width_col = (n_cols_global - ksize) / stride + 1 + 2 * pad;
     const int buf_rows_l = height_col_l * width_col;
     const int buf_cols_l = ksize * ksize;
-    // We take out two from the height because those are done separately
-    // e.g., we run calculations on the top/bottom rows during a different step
     int colbuf_size = buf_cols_l * buf_rows_l;
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -246,7 +248,7 @@ int main( int argc, char * argv[] ) {
     colbuf = (float *) calloc(colbuf_size, sizeof(float));
     toppad =  (float *) calloc(n_cols_global, sizeof(float));
     botpad =  (float *) calloc(n_cols_global, sizeof(float));
-    leftpad =  (float *) calloc(n_cols_global, sizeof(float));
+    leftpad =  (float *) calloc(n_rows_loc, sizeof(float));
     kernel = (float *) calloc(9, sizeof(float));
     kernel[0] = 0.; kernel[1] = 0.25; kernel[2] = 0.; kernel[3] = 0.25;
     kernel[4] = 0.; kernel[5] = 0.25; kernel[6] = 0.; kernel[7] = 0.25;
@@ -256,7 +258,7 @@ int main( int argc, char * argv[] ) {
     const int global_top_row = n_rows_loc * rank + 1;
 
     // Switch to the accelerator
-    #pragma acc enter data create(mat[0:mat_size], mat_new[0:mat_size], colbuf[0:colbuf_size], kernel[0:ksize*ksize], toppad[0:n_cols_global], botpad[0:n_cols_global], leftpad[0:n_rows_loc])
+    #pragma acc enter data create(mat[0:mat_size], mat_new[0:mat_size], colbuf[0:colbuf_size], toppad[0:n_cols_global], botpad[0:n_cols_global], leftpad[0:n_rows_loc]) copyin(kernel[0:ksize*ksize])
 
     fprintf(stdout, "%i %f s | initialized local matrix memory\n",
             rank, (double) (clock() - start_time) / CLOCKS_PER_SEC);
@@ -295,69 +297,66 @@ int main( int argc, char * argv[] ) {
             rank, (double) (clock() - start_time) / CLOCKS_PER_SEC);
 
     iter = 0;
-    swap_ptrs(&mat, &mat_new);
     while (iter < max_iter) {
-        swap_ptrs(&mat, &mat_new);
-        // Jacobi iteration using MPI on the border values
-//        #pragma acc host_data use_device(mat, mat_new)
-//        MPI_Iallreduce(
-//                mat,
-//                mat_new,
-//                n_cols_global, MPI_DOUBLE,
-//                MPI_SUM, top_com, &top_request);
-//
-//        #pragma acc host_data use_device(mat, mat_new)
-//        MPI_Iallreduce(
-//                &mat[(n_rows_loc - 1) * n_cols_global],
-//                &mat_new[(n_rows_loc - 1) * n_cols_global],
-//                n_cols_global,
-//                MPI_DOUBLE, MPI_SUM, bot_com, &bottom_request);
+        #pragma acc host_data use_device(mat, mat_new)
+        MPI_Iallreduce(
+                mat,
+                mat_new,
+                n_cols_global, MPI_FLOAT,
+                MPI_SUM, top_com, &top_request);
+
+        #pragma acc host_data use_device(mat, mat_new)
+        MPI_Iallreduce(
+                &mat[(n_rows_loc - 1) * n_cols_global],
+                &mat_new[(n_rows_loc - 1) * n_cols_global],
+                n_cols_global,
+                MPI_FLOAT, MPI_SUM, bot_com, &bottom_request);
 
         // Do our Jacobi iteration step
 #ifdef USE_GPU
         convolve(&mat[n_cols_global], &mat_new[n_cols_global], kernel,
-                 colbuf, n_rows_loc-2, n_cols_global, buf_cols_l,
+                 colbuf, n_rows_loc-2, n_cols_global,
                  buf_rows_l, ksize, stride, pad, alpha, beta, mat,
                  &mat[(n_rows_loc-1)*n_cols_global], &leftpad[1], handle);
 #endif
 #ifdef USE_BLAS
         convolve(&mat[n_cols_global], &mat_new[n_cols_global], kernel,
-                 colbuf, n_rows_loc-2, n_cols_global, buf_cols_l,
+                 colbuf, n_rows_loc-2, n_cols_global,
                  buf_rows_l, ksize, stride, pad, alpha, beta, mat,
                  &mat[(n_rows_loc-1)*n_cols_global], &leftpad[1]);
 #endif
         // Wait for our Allreduce's to complete
-//        MPI_Wait(&top_request, MPI_STATUS_IGNORE);
-//        MPI_Wait(&bottom_request, MPI_STATUS_IGNORE);
+        MPI_Wait(&top_request, MPI_STATUS_IGNORE);
+        MPI_Wait(&bottom_request, MPI_STATUS_IGNORE);
 #ifdef USE_GPU
         convolve(mat, mat_new, kernel,
-                 colbuf, 1, n_cols_global, ksize * ksize,
+                 colbuf, 1, n_cols_global,
                  n_cols_global, ksize, stride, pad, alpha, beta,
                  toppad, &mat[n_cols_global], leftpad, handle);
-
         convolve(&mat[n_cols_global*(n_rows_loc-1)],
                  &mat_new[n_cols_global*(n_rows_loc-1)], kernel,
-                 colbuf, 1, n_cols_global, ksize*ksize, n_cols_global,
+                 colbuf, 1, n_cols_global, n_cols_global,
                  ksize, stride, pad, alpha, beta, &mat[n_cols_global*(n_rows_loc-2)],
                  botpad, &leftpad[n_rows_loc-1], handle);
 #endif
 #ifdef USE_BLAS
         convolve(mat, mat_new, kernel,
-                 colbuf, 1, n_cols_global, ksize * ksize,
+                 colbuf, 1, n_cols_global,
                  n_cols_global, ksize, stride, pad, alpha, beta,
                  toppad, &mat[n_cols_global], leftpad);
 
         convolve(&mat[n_cols_global*(n_rows_loc-1)],
                  &mat_new[n_cols_global*(n_rows_loc-1)], kernel,
-                 colbuf, 1, n_cols_global, ksize*ksize, n_cols_global,
+                 colbuf, 1, n_cols_global, n_cols_global,
                  ksize, stride, pad, alpha, beta, &mat[n_cols_global*(n_rows_loc-2)],
                  botpad, &leftpad[n_rows_loc-1]);
 #endif
+        swap_ptrs(&mat, &mat_new);
         iter += 1;
     }
     fprintf(stdout, "%i %f s | done calculating Jacobi\n", rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
 
-    #pragma acc exit data copyout(mat[0:mat_size]) delete(mat_new) delete(toppad) delete(botpad) delete(colbuf) delete(leftpad) delete(colbuf_s) delete(kernel) finalize
+    #pragma acc exit data copyout(mat[0:mat_size]) finalize
 
     fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
