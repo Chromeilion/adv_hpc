@@ -3,7 +3,7 @@ project(adv_hpc C)
 
 set(CMAKE_C_STANDARD 11)
 find_package(MPI REQUIRED)
-find_package(OpenACC)
+find_package(OpenACC REQUIRED)
 
 include_directories(SYSTEM ${MPI_INCLUDE_PATH})
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
@@ -39,7 +39,7 @@ elseif (USE_BLAS)
     target_include_directories(ex_2 PRIVATE $ENV{OPENBLAS_INCLUDE})
     target_compile_options(ex_1 PRIVATE "${BLAS_LINKER_FLAGS} ${OpenACC_C_OPTIONS}")
     target_link_libraries(ex_1 "${BLAS_LIBRARIES}" "${MPI_C_LIBRARIES}" "${OpenACC_C_OPTIONS}" m )
-    target_compile_options(ex_2 PRIVATE "${BLAS_LINKER_FLAGS} ${OpenACC_C_OPTIONS}")
+    target_compile_options(ex_2 PRIVATE "${BLAS_LINKER_FLAGS}" "${OpenACC_C_OPTIONS}")
     target_link_libraries(ex_2 "${BLAS_LIBRARIES}" "${MPI_C_LIBRARIES}" "${OpenACC_C_OPTIONS}" m )
 endif()
 
