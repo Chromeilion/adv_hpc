@@ -31,7 +31,7 @@ elseif (USE_GPU)
     target_link_libraries(ex_1 PRIVATE "${MPI_C_LIBRARIES}" "${OpenACC_C_OPTIONS}" CUDA::cublas m)
 
     target_compile_options(ex_2 PRIVATE "${OpenACC_C_OPTIONS}")
-    target_link_libraries(ex_2 PRIVATE "${MPI_C_LIBRARIES}" "${OpenACC_C_OPTIONS}" CUDA::cublas m)
+    target_link_libraries(ex_2 PRIVATE "${MPI_C_LIBRARIES}" "${OpenACC_C_OPTIONS}" CUDA::nppif m)
 elseif (USE_BLAS)
     find_package(BLAS REQUIRED)
     add_compile_definitions(USE_BLAS)
