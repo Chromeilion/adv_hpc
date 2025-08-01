@@ -231,18 +231,18 @@ int main( int argc, char * argv[] ) {
 
     if (rank == npes-1) {
         // If we're the bottom process, we need to fill in the bottom section.
-        #pragma acc parallel loop collapse(1) present(mat)
-        for (i = 0; i < n_cols_global; i++) {
+        #pragma acc parallel loop collapse(1) present(mat) async
+        for (i = 1; i < n_cols_global; i++) {
             mat[(n_rows_loc-1)*n_cols_global + i] = (float)100 - scale_factor * (float)i;
             mat_new[(n_rows_loc-1)*n_cols_global + i] = (float)100 - scale_factor * (float)i;
         }
     }
-    #pragma acc parallel loop collapse(1) present(mat)
+    #pragma acc parallel loop collapse(1) present(mat) async
     for (i = 0; i < n_rows_loc - 1; i++) {
         mat[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
         mat_new[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
     }
-
+    #pragma acc wait
     fprintf(stdout, "%i %f s | start idx is %i with %i processes and %i rows "
                     "per process\n",
             rank, (double) (clock() - start_time) / CLOCKS_PER_SEC,
@@ -291,14 +291,13 @@ int main( int argc, char * argv[] ) {
         MPI_Wait(&top_request, MPI_STATUS_IGNORE);
         MPI_Wait(&bottom_request, MPI_STATUS_IGNORE);
 
-        #pragma acc wait
-
         // Update the top and bottom rows since we have what we need now
-        #pragma acc parallel loop independent present(mat, mat_new)
+        #pragma acc parallel loop independent present(mat, mat_new) async
         for (j = 1; j < n_cols_global-1; j++) {
             do_j_op(mat_new, mat, 1, j, n_cols_global);
             do_j_op(mat_new, mat, n_rows_loc-2, j, n_cols_global);
         }
+        #pragma acc wait
         swap_ptrs(&mat, &mat_new);
         iter += 1;
     }
