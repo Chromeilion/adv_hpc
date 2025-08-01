@@ -78,32 +78,6 @@ float im2col_get_pixel(float *im, int height, int width, int channels,
     return im[col + width*(row + height*channel)];
 }
 
-//From Berkeley Vision's Caffe!
-//https://github.com/BVLC/caffe/blob/master/LICENSE
-void im2col(float* data_im,
-            int channels,  int height,  int width,
-            int ksize,  int stride, int pad, float* data_col)
-{
-    int c,h,w;
-    int height_col = (height + 2*pad - ksize) / stride + 1;
-    int width_col = (width + 2*pad - ksize) / stride + 1;
-
-    int channels_col = channels * ksize * ksize;
-    for (c = 0; c < channels_col; ++c) {
-        int w_offset = c % ksize;
-        int h_offset = (c / ksize) % ksize;
-        int c_im = c / ksize / ksize;
-        for (h = 0; h < height_col; ++h) {
-            for (w = 0; w < width_col; ++w) {
-                int im_row = h_offset + h * stride;
-                int im_col = w_offset + w * stride;
-                int col_index = (c * height_col + h) * width_col + w;
-                data_col[col_index] = im2col_get_pixel(data_im, height, width, channels,
-                                                       im_row, im_col, c_im, pad);
-            }
-        }
-    }
-}
 
 int main( int argc, char * argv[] ) {
     int size;
@@ -111,7 +85,7 @@ int main( int argc, char * argv[] ) {
 
     double start_time;
 
-    float *mat, *mat_new, *colbuf;
+    float *mat, *mat_new;
     int i, j;
 
     // For communicating with the process above and below me.
@@ -169,12 +143,6 @@ int main( int argc, char * argv[] ) {
     const int i_row_max = n_rows_loc - 1;
     const int i_row_min = 1;
 
-    // Convolution parameters
-    const int ksize = 3;
-    const int stride = 1;
-    const int pad = 1;
-    const int channels = 1;
-
     fprintf(stdout, "%i 0 s | detected %i processes and %i rows per proc. "
                     "i_row_min/max are %i %i and col vals are %i %i, "
                     "n_cols_global is %i\n",
@@ -185,10 +153,6 @@ int main( int argc, char * argv[] ) {
     MPI_Comm_split(MPI_COMM_WORLD, bot_color, rank, &bot_com);
 
     const int mat_size = n_cols_global*n_rows_loc;
-    // We don't need to add 2 to height col because it's already factored in.
-    int height_col = (n_rows_loc - ksize) / stride + 1;
-    int width_col = (n_cols_global + 2 - ksize) / stride + 1;
-    int colbuf_size = ksize * ksize * height_col * width_col;
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -198,7 +162,6 @@ int main( int argc, char * argv[] ) {
 
     mat = (float *)calloc(mat_size, sizeof(float));
     mat_new = (float *)calloc(mat_size, sizeof(float));
-    colbuf = (float *)calloc(colbuf_size, sizeof(float));
 
     // Switch to the accelerator
     #pragma acc enter data create(mat[0:mat_size], mat_new[0:mat_size])
@@ -233,8 +196,6 @@ int main( int argc, char * argv[] ) {
         mat[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
         mat_new[i*n_cols_global] = scale_factor * ((float)i+global_top_row);
     }
-    // We subtract two here because the padding is already factored in
-    im2col(mat, channels, n_rows_loc-2, n_cols_global-2, ksize, stride, pad, colbuf);
     #ifndef NDEBUG
     fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
