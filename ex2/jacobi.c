@@ -31,7 +31,6 @@ struct ComParams {
     int bot_target;
     MPI_Request top_request;
     MPI_Request bottom_request;
-    MPI_Comm comm;
 };
 #endif
 
@@ -117,7 +116,6 @@ struct ComParams setup_mpi(int argc, char *argv[]) {
     } else {
         params.bot_target = bot_target;
     }
-    params.comm = MPI_COMM_WORLD;
 #endif
     return params;
 }
@@ -142,7 +140,7 @@ void print_par(const float * mat, const int n_rows, const int n_cols,
                const struct ComParams *mpi_params, FILE *output) {
     int count;
     if(mpi_params->rank)
-        MPI_Send(mat, n_cols*n_rows, MPI_FLOAT, 0, mpi_params->rank, mpi_params->comm);
+        MPI_Send(mat, n_cols*n_rows, MPI_FLOAT, 0, mpi_params->rank, MPI_COMM_WORLD);
     else{
         float * buf = (float *) calloc(n_cols*n_rows, sizeof(float));
         if (mpi_params->npes == 1) {
@@ -178,7 +176,7 @@ void do_j_op(float *mat_new, float *mat, float* error, const int i,
 void jacobi_loop_first_half(float *mat, float *mat_new, float *error,
                                    const struct ArrayParams *array_params) {
     #pragma acc serial async(1)
-    *error = 0;
+    *error = INFINITY;
 
     #pragma acc parallel loop independent collapse(2) present(mat, mat_new, error) reduction(max:error[0:1]) async(1)
     for (int i = array_params->i_row_min + 1; i < array_params->i_row_max - 1; i++) {
@@ -202,22 +200,27 @@ void jacobi_loop_second_half(float *mat, float *mat_new, float *error,
 #ifdef USE_GPU
 #else
 void send_recv(const float *sendbuf, float *recbuf, const int count,
-               const int target, MPI_Request *req, struct ComParams *com_params) {
+               const int target, const int recv_from, MPI_Request *req,
+               struct ComParams *com_params) {
     #pragma acc host_data use_device(sendbuf, recbuf)
     MPI_Isendrecv(sendbuf, count, MPI_FLOAT, target, 0, recbuf, count, MPI_FLOAT,
-                  target, MPI_ANY_TAG, com_params->comm, req);
+                  recv_from, MPI_ANY_TAG, MPI_COMM_WORLD, req);
 }
 #endif
 
-void make_mpi_sendrecs(const float *mat, float *mat_new,
-                        struct ComParams *com_params,
-                        const struct ArrayParams *array_params) {
-    send_recv(mat, mat_new, array_params->n_cols_global, com_params->top_target,
-              &com_params->top_request, com_params);
-    send_recv(&mat[(array_params->i_row_max)*array_params->n_cols_global],
-              &mat_new[(array_params->i_row_max)*array_params->n_cols_global],
-              array_params->n_cols_global, com_params->bot_target,
+void make_mpi_sendrecs(float *mat, float *mat_new,
+                       struct ComParams *com_params,
+                       const struct ArrayParams *array_params) {
+    float *top_recbuf = mat;
+    float *top_sendbuf = &mat[array_params->i_row_min*array_params->n_cols_global];
+    float *bot_recbuf = &mat[array_params->i_row_max*array_params->n_cols_global];
+    float *bot_sendbuf = &mat[(array_params->i_row_max-1)*array_params->n_cols_global];
+    send_recv(top_sendbuf, top_recbuf, array_params->n_cols_global,
+              com_params->bot_target, com_params->bot_target,
               &com_params->bottom_request, com_params);
+    send_recv(bot_sendbuf, bot_recbuf, array_params->n_cols_global,
+              com_params->top_target, com_params->top_target,
+              &com_params->top_request, com_params);
 }
 
 static inline void fill_side(float *mat, float *mat_new, const struct ArrayParams *array_params) {
@@ -298,7 +301,7 @@ int main( int argc, char * argv[] ) {
             array_params.i_col_min, array_params.i_col_max,
             array_params.n_cols_global);
 
-    MPI_Barrier(mpi_params.comm);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     fprintf(stdout, "%i 0 s | finished initialization\n", mpi_params.rank);
     start_time = clock();
