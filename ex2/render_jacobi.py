@@ -51,7 +51,7 @@ def create_frame(data):
 def save_frame(bin_loc, n_iters):
     runner = JacRunner(bin_loc)
     n_iters_t = (MAX_ITERS / N_FRAMES) * n_iters
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(".") as tmp:
         runner.run(IM_SIZE, n_iters_t, LENIENCE, tmp)
         with open(Path(tmp)/"jacobi_output.txt", "r") as f:
             lines = f.readlines()
