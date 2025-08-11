@@ -11,11 +11,14 @@
 set -a; source .env set +a
 
 # Load all the required modules
+module load "$CUDA_MOD"
+module load "$GCC_MOD"
 module load "$CMAKE_MOD"
 module load "$NVHPC_MOD"
 module load "$MPI_MOD"
 module load "$PYTHON_MOD"
 module load "$BLAS_MOD"
+module load "$NCCL_MOD"
 
 CMAKE_BUILD_DIR="cmake-build-dir-jac"
 
