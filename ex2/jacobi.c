@@ -8,10 +8,13 @@
 #include <stdbool.h>
 #include <math.h>
 #include <openacc.h>
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
 #include <nccl.h>
 #include <cuda_runtime.h>
+#include <cuda_device_runtime_api.h>
+#endif
 
+#if !defined(NDEBUG) && defined(USE_CUDA_GRAPHS)
 #define CHECK_CUDA(call) do { \
 cudaError_t _err = (call); \
 if (_err != cudaSuccess) { \
@@ -28,9 +31,11 @@ _res, ncclGetErrorString(_res), __FILE__, __LINE__, #call); \
 abort(); \
 } \
 } while(0)
+#else
+#define CHECK_CUDA(call) do { (void)(call); } while (0)
+#define CHECK_NCCL(call) do { (void)(call); } while (0)
 #endif
-
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
 struct ComParams {
     ncclUniqueId id;
     int rank;
@@ -38,8 +43,8 @@ struct ComParams {
     int top_target;
     int bot_target;
     ncclComm_t comm;
-    MPI_Request top_request;
-    MPI_Request bottom_request;
+    MPI_Request top_request[2];
+    MPI_Request bottom_request[2];
 };
 #else
 struct ComParams {
@@ -47,8 +52,8 @@ struct ComParams {
     int npes;
     int top_target;
     int bot_target;
-    MPI_Request top_request;
-    MPI_Request bottom_request;
+    MPI_Request top_request[2];
+    MPI_Request bottom_request[2];
 };
 #endif
 
@@ -66,13 +71,16 @@ struct ArrayParams {
     float scale_factor;
 };
 
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
 struct GpuParams {
     int ngpu;
     cudaGraph_t graph_1;
     cudaGraph_t graph_2;
+    cudaGraph_t graph_3;
+    cudaGraph_t graph_4;
     cudaGraphExec_t graph_exec_1;
     cudaGraphExec_t graph_exec_2;
+    cudaGraphExec_t graph_exec_3;
     cudaStream_t stream_comm;
     cudaStream_t stream_comp;
     cudaEvent_t comm_done;
@@ -82,7 +90,12 @@ struct GpuParams {
     int acc_stream_comm;
     int acc_stream_comp;
 };
-
+#else
+struct GpuParams {
+    int ngpu;
+};
+#endif
+#ifdef USE_GPU
 struct GpuParams setup_gpu(struct ComParams *mpi_params) {
     struct GpuParams params;
     params.ngpu = acc_get_num_devices(acc_device_nvidia);
@@ -91,9 +104,15 @@ struct GpuParams setup_gpu(struct ComParams *mpi_params) {
         return params;
     }
     int device = mpi_params->rank % params.ngpu;
+#endif
+#ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaSetDevice(device));
+#endif
+#ifdef USE_GPU
     acc_set_device_num(device, acc_device_nvidia);
     acc_init(acc_device_nvidia);
+#endif
+#ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaStreamCreateWithFlags(&params.stream_comm, cudaStreamNonBlocking));
     CHECK_CUDA(cudaStreamCreateWithFlags(&params.stream_comp, cudaStreamNonBlocking));
     CHECK_CUDA(cudaEventCreateWithFlags(&params.comm_done, cudaEventDisableTiming));
@@ -104,17 +123,13 @@ struct GpuParams setup_gpu(struct ComParams *mpi_params) {
     params.acc_stream_comm = 2;
     acc_set_cuda_stream(params.acc_stream_comm, params.stream_comm);
     acc_set_cuda_stream(params.acc_stream_comp, params.stream_comp);
-#ifdef USE_GPU
     if (mpi_params->rank == 0) CHECK_NCCL(ncclGetUniqueId(&mpi_params->id));
     MPI_Bcast(&mpi_params->id, sizeof(mpi_params->id), MPI_BYTE, 0, MPI_COMM_WORLD);
     CHECK_NCCL(ncclCommInitRank(&mpi_params->comm, mpi_params->npes, mpi_params->id, mpi_params->rank));
 #endif
+#ifdef USE_GPU
     return params;
 }
-#else
-struct GpuParams {
-    int ngpu;
-};
 #endif
 
 struct ArrayParams setup_array(const int size,
@@ -218,49 +233,39 @@ void jacobi_loop_first_half(float *mat, float *mat_new,
 }
 
 void jacobi_loop_second_half(float *mat, float *mat_new,
-                                    const struct ArrayParams *array_params) {
+                             const struct ArrayParams *array_params) {
     #pragma acc parallel loop independent present(mat, mat_new, array_params) async(1)
     for (int j = array_params->i_col_min; j < array_params->i_col_max; j++) {
         do_j_op(mat_new, mat, array_params->i_row_min, j, array_params);
-    }
-    #pragma acc parallel loop independent present(mat, mat_new, array_params) async(1)
-    for (int j = array_params->i_col_min; j < array_params->i_col_max; j++) {
         do_j_op(mat_new, mat, array_params->i_row_max-1, j, array_params);
     }
 };
 
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
 void send_recv(const float *sendbuf, float *recbuf, const int count,
                const int recv_from, int target, MPI_Request *req,
                struct ComParams *com_params, struct GpuParams *gpu_params) {
-    if (target == MPI_PROC_NULL && recv_from == MPI_PROC_NULL) { return; }
     #pragma acc host_data use_device(sendbuf, recbuf)
     {
-        CHECK_NCCL(ncclGroupStart());
-        if (target != MPI_PROC_NULL && recv_from != MPI_PROC_NULL) {
+        if (target != MPI_PROC_NULL) {
             CHECK_NCCL(ncclSend(sendbuf, count, ncclFloat, target, com_params->comm,
                      gpu_params->stream_comm));
-            CHECK_NCCL(ncclRecv(recbuf, count, ncclFloat, recv_from, com_params->comm,
-                     gpu_params->stream_comm));
-        } else if (target != MPI_PROC_NULL && recv_from == MPI_PROC_NULL) {
-            CHECK_NCCL(ncclSend(sendbuf, count, ncclFloat, target, com_params->comm,
-                     gpu_params->stream_comm));
-        } else if (target == MPI_PROC_NULL && recv_from != MPI_PROC_NULL) {
             CHECK_NCCL(ncclRecv(recbuf, count, ncclFloat, recv_from, com_params->comm,
                      gpu_params->stream_comm));
         }
-        CHECK_NCCL(ncclGroupEnd());
     }
 }
 #else
 void send_recv(const float *sendbuf, float *recbuf, const int count,
                const int target, const int recv_from, MPI_Request *req) {
     #pragma acc host_data use_device(sendbuf, recbuf)
-    MPI_Isendrecv(sendbuf, count, MPI_FLOAT, target, 0, recbuf, count, MPI_FLOAT,
-                  recv_from, MPI_ANY_TAG, MPI_COMM_WORLD, req);
+    {
+    MPI_Isend(sendbuf, count, MPI_FLOAT, target, 0, MPI_COMM_WORLD, &req[0]);
+    MPI_Irecv(recbuf, count, MPI_FLOAT, target, MPI_ANY_TAG, MPI_COMM_WORLD, &req[1]);
+    }
 }
 #endif
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
 void make_mpi_sendrecs(float *mat, float *mat_new,
                        struct ComParams *com_params,
                        const struct ArrayParams *array_params,
@@ -275,21 +280,23 @@ void make_mpi_sendrecs(float *mat, float *mat_new,
     float *top_sendbuf = &mat[array_params->i_row_min*array_params->n_cols_global];
     float *bot_recbuf = &mat[array_params->i_row_max*array_params->n_cols_global];
     float *bot_sendbuf = &mat[(array_params->i_row_max-1)*array_params->n_cols_global];
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
+    CHECK_NCCL(ncclGroupStart());
     send_recv(top_sendbuf, top_recbuf, array_params->n_cols_global,
       com_params->bot_target, com_params->bot_target,
-      &com_params->bottom_request, com_params, gpu_params);
+      com_params->bottom_request, com_params, gpu_params);
     send_recv(bot_sendbuf, bot_recbuf, array_params->n_cols_global,
               com_params->top_target, com_params->top_target,
-              &com_params->top_request, com_params, gpu_params);
+              com_params->top_request, com_params, gpu_params);
+    CHECK_NCCL(ncclGroupEnd());
     CHECK_CUDA(cudaEventRecord(comm_done, gpu_params->stream_comm));
 #else
     send_recv(top_sendbuf, top_recbuf, array_params->n_cols_global,
           com_params->bot_target, com_params->bot_target,
-          &com_params->bottom_request);
+          com_params->bottom_request);
     send_recv(bot_sendbuf, bot_recbuf, array_params->n_cols_global,
               com_params->top_target, com_params->top_target,
-              &com_params->top_request);
+              com_params->top_request);
 #endif
 }
 
@@ -313,7 +320,8 @@ static inline void fill_bottom(float *mat, float *mat_new,
                 (float)100 - array_params->scale_factor * (float)i;
     }
 }
-#ifdef USE_GPU
+
+#ifdef USE_CUDA_GRAPHS
 static inline void jacobi_iter(float *mat,
                                float* mat_new,
                                struct ComParams *mpi_params,
@@ -325,18 +333,17 @@ static inline void jacobi_iter(float *mat,
     CHECK_CUDA(cudaStreamWaitEvent(gpu_params->stream_comm, comp_done, 0));
     make_mpi_sendrecs(mat, mat_new, mpi_params, array_params, gpu_params, comm_done);
 #else
-static inline void jacobi_iter(float *mat,
-                               float* mat_new,
-                               struct ComParams *mpi_params,
-                               const struct ArrayParams *array_params) {
+void jacobi_iter(float *mat, float* mat_new,
+				 struct ComParams *mpi_params,
+                 const struct ArrayParams *array_params) {
     make_mpi_sendrecs(mat, mat_new, mpi_params, array_params);
 #endif
     jacobi_loop_first_half(mat, mat_new, array_params);
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaStreamWaitEvent(gpu_params->stream_comp, comm_done, 0));
 #else
-    MPI_Wait(&mpi_params->top_request, MPI_STATUS_IGNORE);
-    MPI_Wait(&mpi_params->bottom_request, MPI_STATUS_IGNORE);
+    MPI_Waitall(2, mpi_params->top_request, MPI_STATUS_IGNORE);
+    MPI_Waitall(2, mpi_params->bottom_request, MPI_STATUS_IGNORE);
 #endif
     jacobi_loop_second_half(mat, mat_new, array_params);
 }
@@ -346,7 +353,6 @@ int main( int argc, char * argv[] ) {
     int size;
     double start_time;
     float *mat, *mat_new, *error, *tol;
-    int *iter, *max_iter;
 
     struct ComParams mpi_params = setup_mpi(argc, argv);
 
@@ -363,10 +369,9 @@ int main( int argc, char * argv[] ) {
         MPI_Finalize();
         return 1;
     }
-    max_iter = (int *)calloc(1, sizeof(int));
     tol = (float *)calloc(1, sizeof(float));
 
-    *max_iter = atoi(argv[2]);
+    int max_iter = atoi(argv[2]);
     sscanf(argv[3], "%f", tol);
 
     bool save_to_file = false;
@@ -377,6 +382,10 @@ int main( int argc, char * argv[] ) {
     #ifdef USE_GPU
     struct GpuParams gpu_params = setup_gpu(&mpi_params);
     #endif
+#ifdef USE_CUDA_GRAPHS
+    fprintf(stdout, "%i 0 s | Using cuda graphs\n",
+            mpi_params.rank);
+#endif
 
     const struct ArrayParams array_params = setup_array(size, &mpi_params);
 
@@ -397,9 +406,8 @@ int main( int argc, char * argv[] ) {
     mat = (float *)calloc(array_params.mat_size, sizeof(float));
     mat_new = (float *)calloc(array_params.mat_size, sizeof(float));
     error = (float *)calloc(1, sizeof(float));
-    iter = (int *)calloc(1, sizeof(int));
 
-    *iter = 0;
+    int iter = 0;
     *error = INFINITY;
 
     // Add our data to the accelerator
@@ -435,43 +443,74 @@ int main( int argc, char * argv[] ) {
     fprintf(stdout, "%i %f s | initialized local matrix values\n",
             mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
 
-#ifdef USE_GPU
-    #pragma acc wait
+#ifdef USE_CUDA_GRAPHS
+    // Warm up NCCL
+    {
+        jacobi_iter(mat, mat_new, &mpi_params, &array_params, &gpu_params,
+                    gpu_params.comm_done, gpu_params.comp_done);
+        CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comp));
+        CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comm));
+    }
+    // Capture even iteration
     CHECK_CUDA(cudaStreamBeginCapture(gpu_params.stream_comp, cudaStreamCaptureModeGlobal));
     jacobi_iter(mat, mat_new, &mpi_params, &array_params, &gpu_params,
                 gpu_params.comm_done, gpu_params.comp_done);
     CHECK_CUDA(cudaStreamEndCapture(gpu_params.stream_comp, &gpu_params.graph_1));
-    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_1, 0));
-    #pragma acc wait
+//    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_1, 0));
+    // Capture odd iteration
     CHECK_CUDA(cudaStreamBeginCapture(gpu_params.stream_comp, cudaStreamCaptureModeGlobal));
     jacobi_iter(mat_new, mat, &mpi_params, &array_params, &gpu_params,
                 gpu_params.comm_done_2, gpu_params.comp_done_2);
     CHECK_CUDA(cudaStreamEndCapture(gpu_params.stream_comp, &gpu_params.graph_2));
-    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_2, gpu_params.graph_2, 0));
-    #pragma acc serial async(1)
-    *iter = 2;
-    #pragma acc wait
-#endif
-    while (*iter < *max_iter && *error > *tol) {
-        if (*iter & 1) {
-            #ifdef USE_GPU
-            CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_2, gpu_params.stream_comm));
-            #else
-            jacobi_iter(mat_new, mat, &mpi_params, &array_params);
-            #endif
-        } else {
-            #ifdef USE_GPU
-            CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_1, gpu_params.stream_comm));
-            #else
-            jacobi_iter(mat, mat_new, &mpi_params, &array_params);
-            #endif
-        }
-        *iter += 1;
+//    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_2, gpu_params.graph_2, 0));
+
+    // Batch iterations into one huge graph
+    CHECK_CUDA(cudaGraphCreate(&gpu_params.graph_3, 0));
+    cudaGraphNode_t prev = NULL;
+    for (int i = 0; i < max_iter; i++) {
+        cudaGraphNode_t curr = NULL;
+        cudaGraph_t child = (i & 1) ? gpu_params.graph_2 : gpu_params.graph_1;
+        CHECK_CUDA(cudaGraphAddChildGraphNode(
+            &curr,
+            gpu_params.graph_3,
+            prev ? &prev : NULL,
+            prev ? 1 : 0,
+            child
+        ));
+        prev = curr;
     }
+    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_3, 0));
+    CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_1, gpu_params.stream_comp));
+    #else
+    while (iter < max_iter) {
+        if (iter & 1) {
+            jacobi_iter(mat_new, mat, &mpi_params, &array_params);
+        } else {
+            jacobi_iter(mat, mat_new, &mpi_params, &array_params);
+        }
+        iter += 1;
+    }
+    #endif
+    fprintf(stdout, "%i %f s | jacobi loop complete\n",
+            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
+    #pragma acc wait
+    #ifdef USE_CUDA_GRAPHS
+    CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comp));
+    CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comm));
+    CHECK_CUDA(cudaGraphExecDestroy(gpu_params.graph_exec_1));
+    CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_1));
+    CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_2));
+    CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_3));
+    CHECK_CUDA(cudaEventDestroy(gpu_params.comm_done));
+    CHECK_CUDA(cudaEventDestroy(gpu_params.comm_done_2));
+    CHECK_CUDA(cudaEventDestroy(gpu_params.comp_done));
+    CHECK_CUDA(cudaEventDestroy(gpu_params.comp_done_2));
+    CHECK_CUDA(cudaStreamDestroy(gpu_params.stream_comp));
+    CHECK_CUDA(cudaStreamDestroy(gpu_params.stream_comm));
+#endif
 
     fprintf(stdout, "%i %f s | done calculating Jacobi with an error of %f\n",
             mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC, *error);
-    #pragma acc wait
     #pragma acc exit data copyout(mat[0:array_params.mat_size]) finalize
 
     fflush(stdout);
@@ -486,10 +525,11 @@ int main( int argc, char * argv[] ) {
     print_par(mat, array_params.n_rows_loc, array_params.n_cols_global,
               &mpi_params, out);
     fclose(out);
-#ifdef USE_GPU
+#ifdef USE_CUDA_GRAPHS
+    CHECK_NCCL(ncclCommFinalize(mpi_params.comm));
     CHECK_NCCL(ncclCommDestroy(mpi_params.comm));
 #endif
     MPI_Finalize();
-    free(mat); free(mat_new); free(error); free(max_iter); free(tol); free(iter);
+    free(mat); free(mat_new); free(error); free(tol);
     return 0;
 }
