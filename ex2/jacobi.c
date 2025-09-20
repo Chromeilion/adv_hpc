@@ -103,7 +103,16 @@ struct GpuParams setup_gpu(struct ComParams *mpi_params) {
         fprintf(stdout, "No GPU's found!!!");
         return params;
     }
-    int device = mpi_params->rank % params.ngpu;
+    // Determine local rank within the node to map GPUs correctly on multi-node runs
+    int local_rank = 0, local_size = 0;
+    MPI_Comm local_comm = MPI_COMM_NULL;
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
+    if (local_comm != MPI_COMM_NULL) {
+        MPI_Comm_rank(local_comm, &local_rank);
+        MPI_Comm_size(local_comm, &local_size);
+        MPI_Comm_free(&local_comm);
+    }
+    int device = local_rank % params.ngpu;
 #endif
 #ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaSetDevice(device));

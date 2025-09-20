@@ -25,27 +25,23 @@ def parse_output(mat_out: str) -> dict[str, float]:
         proc_outs[p_no].append((msg_time, msg_type))
 
     for p_no, msg_list in proc_outs.items():
-        prev_msg_type = None
         prev_time = 0
         for msg_time, msg_type in msg_list:
-            if prev_msg_type == msg_type:
-                continue
-            else:
-                diff = float(msg_time) - prev_time
-                match msg_type:
-                    case "s":
-                        serial += diff
-                    case "p":
-                        serial += diff
-                    case "c":
-                        comp += diff
-                    case "m":
-                        mpi += diff
+            diff = float(msg_time) - prev_time
+            match msg_type:
+                case "s":
+                    serial += diff
+                case "p":
+                    serial += diff
+                case "c":
+                    comp += diff
+                case "m":
+                    mpi += diff
 
-                prev_msg_type = msg_type
-                prev_time = float(msg_time)
+            prev_time = float(msg_time)
 
-    return {"serial": serial / p_no, "mpi": mpi / p_no, "comp": comp / p_no}
+    nproc = max(proc_outs.keys())
+    return {"serial": serial / nproc, "mpi": mpi / nproc, "comp": comp / nproc}
 
 
 def parse_data(data):
@@ -87,7 +83,7 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_time.png'
     fig, ax = plt.subplots()
     if eff:
-        ax.plot(x, (serial+mpi+comp)[0]/(serial+mpi+comp))
+        ax.plot(x, (serial+mpi+comp)[-1]/(serial+mpi+comp))
         ax.xaxis.set_ticks(x)
         ax.set_ylabel(f"Efficiency")
     else:
@@ -110,80 +106,161 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
     fig.legend()
     fig.savefig(saveloc)
 
+def plot_data(parsed_data, compute_mode, out_folder):
+    # parsed_data is now: {proc: {task_key: [ {serial, mpi, comp}, ... ]}}
+    # 1) Average runs per (proc, task_key)
+    def avg_records(records):
+        if not records:
+            return {"serial": 0.0, "mpi": 0.0, "comp": 0.0}
+        n = len(records)
+        s = sum(r.get("serial", 0.0) for r in records) / n
+        m = sum(r.get("mpi", 0.0) for r in records) / n
+        c = sum(r.get("comp", 0.0) for r in records) / n
+        return {"serial": s, "mpi": m, "comp": c}
 
-def plot_time_taken(all_res: dict[str, dict[str, dict[str, float]]], saveloc) -> None:
+    # 2) Reorganize into per-task across procs
+    task_to_proc: dict[str, dict[int, dict[str, float]]] = defaultdict(dict)
+    for proc, task_map in parsed_data.items():
+        for task_key, runs in task_map.items():
+            task_to_proc[task_key][proc] = avg_records(runs)
+
+    # 3) For each task, sort procs and plot
+    out_folder = Path(out_folder)
+    out_folder.mkdir(exist_ok=True, parents=True)
+
+    for task_key, proc_map in task_to_proc.items():
+        # sort procs numerically to preserve order in dict
+        sorted_procs = sorted(proc_map.keys())
+        ordered = {p: proc_map[p] for p in sorted_procs}
+
+        is_weak = "weak" in task_key.lower()
+        if is_weak:
+            continue
+            # Efficiency for weak scaling
+            make_plots(f"{compute_mode} {task_key} efficiency", ordered, out_folder, eff=True)
+        else:
+            # Speedup (via efficiency-style curve) for strong scaling
+            make_plots(f"{compute_mode} {task_key} speedup", ordered, out_folder, eff=True)
+        # Absolute time and proportions
+        make_plots(f"{compute_mode} {task_key} scaling", ordered, out_folder)
+
+def plot_time_taken(all_res: dict[str, dict[str, dict[int, dict[str, float]]]], saveloc) -> None:
     saveloc = Path(saveloc)
-    all_y = defaultdict(dict)
-    for alg, res in all_res.items():
-        for scale_type, n_proc_res in res.items():
-            items = [i for i in list(n_proc_res.values())]
-            serial = np.array([i["serial"] for i in items])
-            mpi = np.array([i["mpi"] for i in items])
-            comp = np.array([i["comp"] for i in items])
-            total_time_taken = serial+mpi+comp
-            all_y[alg][scale_type] = total_time_taken
-    x = [int(i) for i in list(n_proc_res.keys())]
+    saveloc.mkdir(parents=True, exist_ok=True)
+
+    # Build totals per (alg, task_key) over sorted procs
+    totals: dict[str, dict[str, tuple[list[int], np.ndarray]]] = defaultdict(dict)
+    for alg, tasks in all_res.items():
+        for task_key, proc_map in tasks.items():
+            if not proc_map:
+                continue
+            procs_sorted = sorted(proc_map.keys())
+            items = [proc_map[p] for p in procs_sorted]
+            serial = np.array([i.get("serial", 0.0) for i in items], dtype=float)
+            mpi = np.array([i.get("mpi", 0.0) for i in items], dtype=float)
+            comp = np.array([i.get("comp", 0.0) for i in items], dtype=float)
+            total = serial + mpi + comp
+            totals[alg][task_key] = (procs_sorted, total)
+
+    # Separate weak and strong tasks
+    weak_tasks = defaultdict(dict)    # alg -> task_key -> (x, y)
+    strong_tasks = defaultdict(dict)  # alg -> task_key -> (x, y)
+    for alg, task_map in totals.items():
+        for task_key, xy in task_map.items():
+            if "weak" in task_key.lower():
+                weak_tasks[alg][task_key] = xy
+            else:
+                strong_tasks[alg][task_key] = xy
+
+    # Strong scaling time (prefer the largest size if multiple strong tasks exist)
     fig_s, ax_s = plt.subplots()
+    for alg, task_map in strong_tasks.items():
+        if not task_map:
+            continue
+        # try to select "strong large" by max numeric suffix; fallback to arbitrary stable order
+        def size_of(k: str) -> int:
+            parts = k.split("_")
+            for part in reversed(parts):
+                if part.isdigit():
+                    return int(part)
+            return -1
+        selected_key = max(task_map.keys(), key=size_of)
+        x, y = task_map[selected_key]
+        ax_s.plot(x, y, label=f"{alg} ({selected_key})")
+    ax_s.set_title("Strong Scaling Time Taken")
+    ax_s.set_xlabel("No. Processes")
+    ax_s.set_ylabel("Total Time Taken (seconds)")
+    ax_s.legend()
+    fig_s.savefig(saveloc / "alg_scaling_strong.png")
+
+    # Weak scaling time and efficiency (t(1)/t(N))
     fig_w, ax_w = plt.subplots()
     fig_we, ax_we = plt.subplots()
-    ax_s.xaxis.set_ticks(x)
-    ax_w.xaxis.set_ticks(x)
-    ax_we.xaxis.set_ticks(x)
-    for alg, s_res in all_y.items():
-        ax_w.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], s_res["weak"], label=alg)
-        ax_s.plot(x, s_res["strong large"], label=alg)
-        ax_we.plot([float(i) for i in list(all_res['GPU']['weak'].keys())], np.array(s_res["weak"]).min()/np.array(s_res["weak"]), label=alg)
-    ax_s.set_title("Strong Scaling Time Taken")
+    for alg, task_map in weak_tasks.items():
+        if not task_map:
+            continue
+        # If multiple weak tasks exist, plot each
+        for task_key, (x, y) in task_map.items():
+            ax_w.plot(x, y, label=f"{alg} ({task_key})")
+            eff = (y[0] / y) if len(y) > 0 and y[0] > 0 else np.ones_like(y)
+            ax_we.plot(x, eff, label=f"{alg} ({task_key})")
     ax_w.set_title("Weak Scaling Time Taken")
-    ax_we.set_title("Weak Scaling Efficiency")
-    ax_s.set_xlabel("No. Proceses")
-    ax_w.set_xlabel("No. Proceses")
-    ax_we.set_xlabel("No. Proceses")
-    ax_s.set_ylabel("Total Time Taken (seconds)")
+    ax_w.set_xlabel("No. Processes")
     ax_w.set_ylabel("Total Time Taken (seconds)")
-    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
-    fig_we.legend()
-    fig_s.legend()
-    fig_w.legend()
-    fig_s.savefig(saveloc/"alg_scaling_strong.png")
-    fig_w.savefig(saveloc/"alg_scaling_weak.png")
-    fig_we.savefig(saveloc/"alg_scaling_weak_efficiency.png")
+    ax_w.legend()
+    fig_w.savefig(saveloc / "alg_scaling_weak.png")
 
-def plot_data(parsed_data, compute_mode, out_folder):
-    for scaling_type, data in parsed_data.items():
-        if scaling_type == "weak":
-            make_plots(f"{compute_mode} {scaling_type} efficiency", data["parsed"], out_folder, eff=True)
-        else:
-            make_plots(f"{compute_mode} {scaling_type} speedup", data["parsed"], out_folder, eff=True)
-        make_plots(f"{compute_mode} {scaling_type} scaling", data["parsed"], out_folder)
+    ax_we.set_title("Weak Scaling Efficiency")
+    ax_we.set_xlabel("No. Processes")
+    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
+    ax_we.legend()
+    fig_we.savefig(saveloc / "alg_scaling_weak_efficiency.png")
 
 
 def main():
     output_path = Path("./figs")
     output_path.mkdir(exist_ok=True)
-    data_gpu_path = "./jacobi_gpu.json"
-    data_naive_path = "./jacobi_naive.json"
+    data_dir = Path("./results")
 
-    with open(data_gpu_path, "r") as f:
-        data_gpu = json.load(f)
-    with open(data_naive_path, "r") as f:
-        data_cpu = json.load(f)
+    variations = ["gpu_graphs"]#, "naive", "gpu"]
+    procs = [4, 8, 16, 32, 64, 128]
 
-    data_gpu = parse_data(data_gpu)
-    data_cpu = parse_data(data_cpu)
+    data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for var in variations:
+        for proc in procs:
+            with open(data_dir/f"jacobi_{var}{proc}.json", "r") as f:
+                f = json.load(f)
+                for key, val in f.items():
+                    for test in val:
+                        test = parse_output(test)
+                        data[var][proc][key].append(test)
 
-    plot_data(data_gpu, "GPU", output_path)
-    plot_data(data_cpu, "CPU", output_path)
+    for key, val in data.items():
+        plot_data(val, key, output_path)
 
-    res = {
-        "CPU": data_cpu,
-        "GPU": data_gpu
-    }
-    newdic = defaultdict(lambda: defaultdict(dict))
-    for key in res.keys():
-        for task_key in res[key].keys():
-            newdic[key][task_key] = res[key][task_key]["parsed"]
-    plot_time_taken(newdic, output_path)
+    # Build input for plot_time_taken:
+    # all_res: {algorithm: {task_key: {proc: {serial, mpi, comp}}}}
+    all_res = defaultdict(dict)
+    for alg, proc_map in data.items():
+        task_collect = defaultdict(dict)  # task_key -> {proc -> avg dict}
+        for proc, task_runs in proc_map.items():
+            for task_key, runs in task_runs.items():
+                # average runs for this (alg, proc, task_key)
+                if runs:
+                    n = len(runs)
+                    avg = {
+                        "serial": sum(r.get("serial", 0.0) for r in runs) / n,
+                        "mpi":    sum(r.get("mpi", 0.0) for r in runs) / n,
+                        "comp":   sum(r.get("comp", 0.0) for r in runs) / n,
+                    }
+                else:
+                    avg = {"serial": 0.0, "mpi": 0.0, "comp": 0.0}
+                task_collect[task_key][int(proc)] = avg
+        all_res[alg] = task_collect
+
+
+    plot_time_taken(all_res, output_path)
 
 if __name__ == "__main__":
     main()
+
