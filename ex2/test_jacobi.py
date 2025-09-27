@@ -71,7 +71,9 @@ def test_strong(run_params: RunParams, runner: MatRunner, size: int, iters, leni
     print("Testing strong scaling", flush=True)
     test_res = []
     print(f"Testing with {run_params.n_nodes} nodes and matrix size {size}", flush=True)
-    for _ in range(5):
+    no_tests = 5
+    for test_no in range(no_tests):
+        print(f"Runing test {test_no} of {no_tests}", flush=True)
         test_res.append(runner.run(size, run_params.n_tasks, iters, lenience)[0])
     return test_res
 
@@ -90,7 +92,7 @@ def main(binary_loc: str, output_file: str, g: bool):
     run_params = RunParams()
     runner = MatRunner(binary_loc, run_params)
     res = {
-        "weak_N2": test_weak(run_params, runner),
+#        "weak_N2": test_weak(run_params, runner),
         f"strong_{STRONG_SCALE_SIZE_SMALL}": test_strong(run_params, runner, STRONG_SCALE_SIZE_SMALL, STRONG_SCALE_ITER, STRONG_SCALE_LENIENCE),
         f"strong_{STRONG_SCALE_SIZE_BIG}": test_strong(run_params, runner, STRONG_SCALE_SIZE_BIG, STRONG_SCALE_ITER, STRONG_SCALE_LENIENCE)
     }

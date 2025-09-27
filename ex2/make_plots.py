@@ -75,7 +75,8 @@ def parse_data(data):
 
 def make_plots(base_title: str, res: dict[str, dict[str, float]],
                output_dir: Path, eff: bool = False) -> None:
-    x = [int(i) for i in reversed(res.keys())]
+    x = [int(i)//4 for i in reversed(res.keys())]
+
     items = list(reversed(res.values()))
     serial = np.array([i["serial"] for i in items])
     mpi = np.array([i["mpi"] for i in items])
@@ -94,7 +95,7 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
         ax.set_ylabel(f"Time (seconds)")
     fig.legend()
     ax.set_title(base_title)
-    ax.set_xlabel(f"Processes")
+    ax.set_xlabel(f"Nodes")
     fig.savefig(saveloc)
 
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_prop.png'
@@ -222,8 +223,8 @@ def main():
     output_path.mkdir(exist_ok=True)
     data_dir = Path("./results")
 
-    variations = ["gpu_graphs"]#, "naive", "gpu"]
-    procs = [4, 8, 16, 32, 64, 128]
+    variations = ["gpu_graphs", "gpu", "naive"]
+    procs = [4, 16, 32, 64, 128]
 
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for var in variations:

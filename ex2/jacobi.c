@@ -76,11 +76,8 @@ struct GpuParams {
     int ngpu;
     cudaGraph_t graph_1;
     cudaGraph_t graph_2;
-    cudaGraph_t graph_3;
-    cudaGraph_t graph_4;
     cudaGraphExec_t graph_exec_1;
     cudaGraphExec_t graph_exec_2;
-    cudaGraphExec_t graph_exec_3;
     cudaStream_t stream_comm;
     cudaStream_t stream_comp;
     cudaEvent_t comm_done;
@@ -100,10 +97,9 @@ struct GpuParams setup_gpu(struct ComParams *mpi_params) {
     struct GpuParams params;
     params.ngpu = acc_get_num_devices(acc_device_nvidia);
     if (params.ngpu == 0) {
-        fprintf(stdout, "No GPU's found!!!");
-        return params;
+        fprintf(stdout, "No GPU's found!!!\n");
     }
-    // Determine local rank within the node to map GPUs correctly on multi-node runs
+    // Determine local rank within the node
     int local_rank = 0, local_size = 0;
     MPI_Comm local_comm = MPI_COMM_NULL;
     MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
@@ -465,51 +461,40 @@ int main( int argc, char * argv[] ) {
     jacobi_iter(mat, mat_new, &mpi_params, &array_params, &gpu_params,
                 gpu_params.comm_done, gpu_params.comp_done);
     CHECK_CUDA(cudaStreamEndCapture(gpu_params.stream_comp, &gpu_params.graph_1));
-//    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_1, 0));
+    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_1, 0));
     // Capture odd iteration
     CHECK_CUDA(cudaStreamBeginCapture(gpu_params.stream_comp, cudaStreamCaptureModeGlobal));
     jacobi_iter(mat_new, mat, &mpi_params, &array_params, &gpu_params,
                 gpu_params.comm_done_2, gpu_params.comp_done_2);
     CHECK_CUDA(cudaStreamEndCapture(gpu_params.stream_comp, &gpu_params.graph_2));
-//    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_2, gpu_params.graph_2, 0));
-
-    // Batch iterations into one huge graph
-    CHECK_CUDA(cudaGraphCreate(&gpu_params.graph_3, 0));
-    cudaGraphNode_t prev = NULL;
-    for (int i = 0; i < max_iter; i++) {
-        cudaGraphNode_t curr = NULL;
-        cudaGraph_t child = (i & 1) ? gpu_params.graph_2 : gpu_params.graph_1;
-        CHECK_CUDA(cudaGraphAddChildGraphNode(
-            &curr,
-            gpu_params.graph_3,
-            prev ? &prev : NULL,
-            prev ? 1 : 0,
-            child
-        ));
-        prev = curr;
-    }
-    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_1, gpu_params.graph_3, 0));
-    CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_1, gpu_params.stream_comp));
-    #else
+    CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_2, gpu_params.graph_2, 0));
+#endif
     while (iter < max_iter) {
         if (iter & 1) {
+#ifdef USE_CUDA_GRAPHS
+            CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_2, gpu_params.stream_comp));
+#else
             jacobi_iter(mat_new, mat, &mpi_params, &array_params);
+#endif
         } else {
+#ifdef USE_CUDA_GRAPHS
+            CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_1, gpu_params.stream_comp));
+#else
             jacobi_iter(mat, mat_new, &mpi_params, &array_params);
+#endif
         }
         iter += 1;
     }
-    #endif
     fprintf(stdout, "%i %f s | jacobi loop complete\n",
             mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
     #pragma acc wait
-    #ifdef USE_CUDA_GRAPHS
+#ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comp));
     CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comm));
     CHECK_CUDA(cudaGraphExecDestroy(gpu_params.graph_exec_1));
+    CHECK_CUDA(cudaGraphExecDestroy(gpu_params.graph_exec_2));
     CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_1));
     CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_2));
-    CHECK_CUDA(cudaGraphDestroy(gpu_params.graph_3));
     CHECK_CUDA(cudaEventDestroy(gpu_params.comm_done));
     CHECK_CUDA(cudaEventDestroy(gpu_params.comm_done_2));
     CHECK_CUDA(cudaEventDestroy(gpu_params.comp_done));
