@@ -82,7 +82,7 @@ def main(binary_loc: str, output_file: str, g: bool):
     # Strong scaling consts
     STRONG_SCALE_SIZE_BIG = 2**15
     STRONG_SCALE_SIZE_SMALL = 2**14
-    STRONG_SCALE_ITER = 2048
+    STRONG_SCALE_ITER = 10000
     STRONG_SCALE_LENIENCE = 0
 
     if g:

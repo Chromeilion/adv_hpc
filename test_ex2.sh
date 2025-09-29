@@ -26,20 +26,18 @@ export CMAKE_BUILD_DIR="cmake-build-dir-jac$SLURM_NTASKS"
 export C_COMP=nvc
 export CXX_COMP=nvc++
 
-#echo "Compiling naive algorithm:"
+echo "Compiling naive algorithm:"
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$C_COMP -DCMAKE_CXX_COMPILER=$CXX_COMP -DNAIVE=ON -S . -B $CMAKE_BUILD_DIR
+cd $CMAKE_BUILD_DIR || exit 1
+make
+cd ..
 
-#cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$C_COMP -DCMAKE_CXX_COMPILER=$CXX_COMP -DNAIVE=ON -S . -B $CMAKE_BUILD_DIR
-#cd $CMAKE_BUILD_DIR || exit 1
-#make
-#cd ..
-#
-#echo "Testing naive algorithm:"
-#python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_naive
-#
-#echo "Deleting the build directory:"
-#rm -r $CMAKE_BUILD_DIR
-#
-#
+echo "Testing naive algorithm:"
+python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_naive
+
+echo "Deleting the build directory:"
+rm -r $CMAKE_BUILD_DIR
+
 # regular CUDA
 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$C_COMP -DCMAKE_CXX_COMPILER=$CXX_COMP -DUSE_GPU=ON -S . -B $CMAKE_BUILD_DIR
 cd $CMAKE_BUILD_DIR || exit 1
@@ -54,13 +52,13 @@ rm -r $CMAKE_BUILD_DIR
 
 
 # CUDA Graphs
-#cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$C_COMP -DCMAKE_CXX_COMPILER=$CXX_COMP -DUSE_GPU=ON -DUSE_CUDA_GRAPHS=ON -S . -B $CMAKE_BUILD_DIR
-#cd $CMAKE_BUILD_DIR || exit 1
-#make
-#cd ..
-#
-#echo "Testing CUDA Graphs algorithm:"
-#python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_gpu_graphs -g
-#
-#echo "Deleting the build directory:"
-#rm -r $CMAKE_BUILD_DIR
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$C_COMP -DCMAKE_CXX_COMPILER=$CXX_COMP -DUSE_GPU=ON -DUSE_CUDA_GRAPHS=ON -S . -B $CMAKE_BUILD_DIR
+cd $CMAKE_BUILD_DIR || exit 1
+make
+cd ..
+
+echo "Testing CUDA Graphs algorithm:"
+python ex2/test_jacobi.py -b $CMAKE_BUILD_DIR/ex_2 -o jacobi_gpu_graphs -g
+
+echo "Deleting the build directory:"
+rm -r $CMAKE_BUILD_DIR

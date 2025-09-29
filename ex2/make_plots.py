@@ -38,6 +38,7 @@ def parse_output(mat_out: str) -> dict[str, float]:
                 case "m":
                     mpi += diff
 
+
             prev_time = float(msg_time)
 
     nproc = max(proc_outs.keys())
@@ -205,17 +206,18 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[int, dict[str, float]]]], 
             ax_w.plot(x, y, label=f"{alg} ({task_key})")
             eff = (y[0] / y) if len(y) > 0 and y[0] > 0 else np.ones_like(y)
             ax_we.plot(x, eff, label=f"{alg} ({task_key})")
-    ax_w.set_title("Weak Scaling Time Taken")
-    ax_w.set_xlabel("No. Processes")
-    ax_w.set_ylabel("Total Time Taken (seconds)")
-    ax_w.legend()
-    fig_w.savefig(saveloc / "alg_scaling_weak.png")
 
-    ax_we.set_title("Weak Scaling Efficiency")
-    ax_we.set_xlabel("No. Processes")
-    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
-    ax_we.legend()
-    fig_we.savefig(saveloc / "alg_scaling_weak_efficiency.png")
+#    ax_w.set_title("Weak Scaling Time Taken")
+#    ax_w.set_xlabel("No. Processes")
+#    ax_w.set_ylabel("Total Time Taken (seconds)")
+#    ax_w.legend()
+#    fig_w.savefig(saveloc / "alg_scaling_weak.png")
+
+#    ax_we.set_title("Weak Scaling Efficiency")
+#    ax_we.set_xlabel("No. Processes")
+#    ax_we.set_ylabel("Efficiency (t(1)/t(N))")
+#    ax_we.legend()
+#    fig_we.savefig(saveloc / "alg_scaling_weak_efficiency.png")
 
 
 def main():
@@ -224,7 +226,7 @@ def main():
     data_dir = Path("./results")
 
     variations = ["gpu_graphs", "gpu", "naive"]
-    procs = [4, 16, 32, 64, 128]
+    procs = [4, 8, 16, 32, 64, 128]
 
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for var in variations:

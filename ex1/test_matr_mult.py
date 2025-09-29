@@ -12,6 +12,7 @@ BOOST_N_GPUS = 4
 # Weak scaling consts
 WEAK_SCALE_RATIO = 100
 # Weak scaling consts
+STRONG_SCALE_SIZE_HUGE = 2**14
 STRONG_SCALE_SIZE_BIG = 2**13
 STRONG_SCALE_SIZE_SMALL = 2**11
 
@@ -72,29 +73,31 @@ def test_weak(run_params: RunParams, runner: MatRunner) -> dict[int, str]:
 
 def test_strong(run_params: RunParams, runner: MatRunner, size: int) -> dict[int, str]:
     print("Testing strong scaling", flush=True)
-    test_res = {}
-    x = run_params.max_nodes
-    proc_list = [run_params.max_nodes]
-    while x > 1:
-        root = x / 2
-        proc_list.append(int(root))
-        x = root
-    for n_nodes in proc_list:
-        print(f"Testing with {n_nodes} nodes and matrix size {size}", flush=True)
-        test_res[n_nodes] = runner.run(size, n_nodes)[0]
+    test_res = []
+    no_tests = 5
+    print(f"Testing with {run_params.max_nodes} nodes and matrix size {size}", flush=True)
+    for test_no in range(no_tests):
+        print(f"Runing test {test_no} of {run_params.max_nodes}", flush=True)
+        test_res.append(runner.run(size, run_params.max_nodes)[0])
     return test_res
 
 
-def main(binary_loc: str, output_file: str):
+def main(binary_loc: str, output_file: str, g: bool = None):
     print("Running matrix multiplication scaling tests", flush=True)
     run_params = RunParams()
     runner = MatRunner(binary_loc, run_params)
+    if g is not None and g:
+        STRONG_SCALE_SIZE_BIG = 2**15
+        STRONG_SCALE_SIZE_SMALL = 2**14
+    else:
+        STRONG_SCALE_SIZE_BIG = 2**13
+        STRONG_SCALE_SIZE_SMALL =  2**12
     res = {
-        "weak_N2": test_weak(run_params, runner),
+#        "weak_N2": test_weak(run_params, runner),
         f"strong_{STRONG_SCALE_SIZE_SMALL}": test_strong(run_params, runner, STRONG_SCALE_SIZE_SMALL),
         f"strong_{STRONG_SCALE_SIZE_BIG}": test_strong(run_params, runner, STRONG_SCALE_SIZE_BIG)
     }
-
+    output_file += str(run_params.max_nodes*run_params.p_per_node)+".json"
     with open(output_file, "w") as f:
         json.dump(res, f)
 
@@ -103,5 +106,6 @@ if __name__ == "__main__":
     parser = ap.ArgumentParser()
     parser.add_argument("-b", "--binary", action="store", required=True)
     parser.add_argument("-o", "--output-file", action="store", required=True)
+    parser.add_argument("-g", action="store_true")
     args = parser.parse_args()
-    main(args.binary, args.output_file)
+    main(args.binary, args.output_file, args.g)

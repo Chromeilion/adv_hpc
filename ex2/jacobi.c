@@ -294,7 +294,6 @@ void make_mpi_sendrecs(float *mat, float *mat_new,
               com_params->top_target, com_params->top_target,
               com_params->top_request, com_params, gpu_params);
     CHECK_NCCL(ncclGroupEnd());
-    CHECK_CUDA(cudaEventRecord(comm_done, gpu_params->stream_comm));
 #else
     send_recv(top_sendbuf, top_recbuf, array_params->n_cols_global,
           com_params->bot_target, com_params->bot_target,
@@ -337,6 +336,7 @@ static inline void jacobi_iter(float *mat,
     CHECK_CUDA(cudaEventRecord(comp_done, gpu_params->stream_comp));
     CHECK_CUDA(cudaStreamWaitEvent(gpu_params->stream_comm, comp_done, 0));
     make_mpi_sendrecs(mat, mat_new, mpi_params, array_params, gpu_params, comm_done);
+    CHECK_CUDA(cudaEventRecord(comm_done, gpu_params->stream_comm));
 #else
 void jacobi_iter(float *mat, float* mat_new,
 				 struct ComParams *mpi_params,
@@ -405,7 +405,7 @@ int main( int argc, char * argv[] ) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     fprintf(stdout, "%i 0 s | finished initialization\n", mpi_params.rank);
-    start_time = clock();
+    start_time = MPI_Wtime();
 
 
     mat = (float *)calloc(array_params.mat_size, sizeof(float));
@@ -420,11 +420,11 @@ int main( int argc, char * argv[] ) {
     mat_new[0:array_params.mat_size]) copyin(array_params)
 
     fprintf(stdout, "%i %f s | initialized local matrix memory\n",
-            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
+            mpi_params.rank, (double)(MPI_Wtime()-start_time)/CLOCKS_PER_SEC);
 
     fprintf(stdout, "%i %f s | start idx is %i with %i processes and %i rows "
                     "per process\n",
-            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC,
+            mpi_params.rank, (double)(MPI_Wtime()-start_time)/CLOCKS_PER_SEC,
             array_params.global_top_row, mpi_params.npes,
             array_params.n_rows_inner);
 
@@ -446,7 +446,7 @@ int main( int argc, char * argv[] ) {
     #endif
 
     fprintf(stdout, "%i %f s | initialized local matrix values\n",
-            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
+            mpi_params.rank, (double)(MPI_Wtime()-start_time)/CLOCKS_PER_SEC);
 
 #ifdef USE_CUDA_GRAPHS
     // Warm up NCCL
@@ -465,7 +465,7 @@ int main( int argc, char * argv[] ) {
     // Capture odd iteration
     CHECK_CUDA(cudaStreamBeginCapture(gpu_params.stream_comp, cudaStreamCaptureModeGlobal));
     jacobi_iter(mat_new, mat, &mpi_params, &array_params, &gpu_params,
-                gpu_params.comm_done_2, gpu_params.comp_done_2);
+                gpu_params.comm_done, gpu_params.comp_done);
     CHECK_CUDA(cudaStreamEndCapture(gpu_params.stream_comp, &gpu_params.graph_2));
     CHECK_CUDA(cudaGraphInstantiate(&gpu_params.graph_exec_2, gpu_params.graph_2, 0));
 #endif
@@ -481,12 +481,13 @@ int main( int argc, char * argv[] ) {
             CHECK_CUDA(cudaGraphLaunch(gpu_params.graph_exec_1, gpu_params.stream_comp));
 #else
             jacobi_iter(mat, mat_new, &mpi_params, &array_params);
+            #pragma acc wait(1)
 #endif
         }
         iter += 1;
     }
     fprintf(stdout, "%i %f s | jacobi loop complete\n",
-            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC);
+            mpi_params.rank, (double)(MPI_Wtime()-start_time)/CLOCKS_PER_SEC);
     #pragma acc wait
 #ifdef USE_CUDA_GRAPHS
     CHECK_CUDA(cudaStreamSynchronize(gpu_params.stream_comp));
@@ -504,21 +505,21 @@ int main( int argc, char * argv[] ) {
 #endif
 
     fprintf(stdout, "%i %f s | done calculating Jacobi with an error of %f\n",
-            mpi_params.rank, (double)(clock()-start_time)/CLOCKS_PER_SEC, *error);
+            mpi_params.rank, (double)(MPI_Wtime()-start_time)/CLOCKS_PER_SEC, *error);
     #pragma acc exit data copyout(mat[0:array_params.mat_size]) finalize
 
     fflush(stdout);
     MPI_Barrier(MPI_COMM_WORLD);
     printf("\n");
-    FILE *out;
-    if (save_to_file) {
-        out = fopen( "jacobi_output.txt", "w" );
-    } else {
-        out = stdout;
-    }
-    print_par(mat, array_params.n_rows_loc, array_params.n_cols_global,
-              &mpi_params, out);
-    fclose(out);
+//    FILE *out;
+//    if (save_to_file) {
+//        out = fopen( "jacobi_output.txt", "w" );
+//    } else {
+//        out = stdout;
+//    }
+//    print_par(mat, array_params.n_rows_loc, array_params.n_cols_global,
+//              &mpi_params, out);
+//    fclose(out);
 #ifdef USE_CUDA_GRAPHS
     CHECK_NCCL(ncclCommFinalize(mpi_params.comm));
     CHECK_NCCL(ncclCommDestroy(mpi_params.comm));
