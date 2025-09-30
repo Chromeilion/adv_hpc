@@ -89,9 +89,9 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
         ax.xaxis.set_ticks(x)
         ax.set_ylabel(f"Efficiency")
     else:
-        ax.plot(x, serial, label="Serial")
-        ax.plot(x, mpi, label="MPI")
-        ax.plot(x, comp, label="Matrix Op.")
+        ax.plot(x, serial)#, label="Serial")
+#        ax.plot(x, mpi, label="MPI")
+#        ax.plot(x, comp, label="Matrix Op.")
         ax.xaxis.set_ticks(x)
         ax.set_ylabel(f"Time (seconds)")
     fig.legend()
@@ -101,12 +101,12 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
 
     saveloc = output_dir/f'{(base_title.replace(" ", "_"))}_prop.png'
     all_sum = (serial + mpi + comp)[::-1]
-    fig, ax = plt.subplots()
-    ax.stackplot(list(reversed(x)), serial[::-1] / all_sum, mpi[::-1] / all_sum, comp[::-1] / all_sum,
-                 labels=["Serial", "MPI", "Matrix Op."])
-    ax.set_title(f"{base_title} proportion")
-    fig.legend()
-    fig.savefig(saveloc)
+#    fig, ax = plt.subplots()
+#    ax.stackplot(list(reversed(x)), serial[::-1] / all_sum, mpi[::-1] / all_sum, comp[::-1] / all_sum,
+#                 labels=["Serial", "MPI", "Matrix Op."])
+#    ax.set_title(f"{base_title} proportion")
+#    fig.legend()
+#    fig.savefig(saveloc)
 
 def plot_data(parsed_data, compute_mode, out_folder):
     # parsed_data is now: {proc: {task_key: [ {serial, mpi, comp}, ... ]}}
@@ -188,24 +188,26 @@ def plot_time_taken(all_res: dict[str, dict[str, dict[int, dict[str, float]]]], 
             return -1
         selected_key = max(task_map.keys(), key=size_of)
         x, y = task_map[selected_key]
+        x = np.array(x) / 4
         ax_s.plot(x, y, label=f"{alg} ({selected_key})")
     ax_s.set_title("Strong Scaling Time Taken")
-    ax_s.set_xlabel("No. Processes")
+    ax_s.set_xlabel("Nodes")
     ax_s.set_ylabel("Total Time Taken (seconds)")
+    ax_s.xaxis.set_ticks(x)
     ax_s.legend()
     fig_s.savefig(saveloc / "alg_scaling_strong.png")
 
     # Weak scaling time and efficiency (t(1)/t(N))
-    fig_w, ax_w = plt.subplots()
-    fig_we, ax_we = plt.subplots()
-    for alg, task_map in weak_tasks.items():
-        if not task_map:
-            continue
-        # If multiple weak tasks exist, plot each
-        for task_key, (x, y) in task_map.items():
-            ax_w.plot(x, y, label=f"{alg} ({task_key})")
-            eff = (y[0] / y) if len(y) > 0 and y[0] > 0 else np.ones_like(y)
-            ax_we.plot(x, eff, label=f"{alg} ({task_key})")
+#    fig_w, ax_w = plt.subplots()
+#    fig_we, ax_we = plt.subplots()
+#    for alg, task_map in weak_tasks.items():
+#        if not task_map:
+#            continue
+#        # If multiple weak tasks exist, plot each
+#        for task_key, (x, y) in task_map.items():
+#            ax_w.plot(x, y, label=f"{alg} ({task_key})")
+#            eff = (y[0] / y) if len(y) > 0 and y[0] > 0 else np.ones_like(y)
+#            ax_we.plot(x, eff, label=f"{alg} ({task_key})")
 
 #    ax_w.set_title("Weak Scaling Time Taken")
 #    ax_w.set_xlabel("No. Processes")
