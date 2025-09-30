@@ -29,3 +29,21 @@ to accelerate the code.
 
 ## Exercise 2: Jacobi Algorithm
 
+For the Jacobi iteration algorithm, I have 3 backends:
+
+### OpenACC + MPI + CPU
+
+This implementation paralizes the Jacobi iteration using OpenACC and MPI on the 
+cpu. 
+
+### OpenACC + MPI + GPU
+
+Pretty much the same as the previous one, but this time the Jacobi iteration is 
+done on the GPU. CUDA-aware MPI is used to facilitate direct GPU-GPU 
+communication on clusters that support it.
+
+### OpenACC + CUDA Graphs + NCCL
+
+This implementation uses CUDA graphs and NCCL to try and speed up the code.
+It tends to perform about the same as OpenACC + MPI + GPU, with a little bit 
+of extra overhead coming from the CUDA graph instantiation.
