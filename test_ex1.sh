@@ -19,7 +19,7 @@ module load "$MPI_MOD"
 module load "$PYTHON_MOD"
 module load "$BLAS_MOD"
 
-export CMAKE_BUILD_DIR="cmake-build-dir-jac$SLURM_NTASKS"
+export CMAKE_BUILD_DIR="cmake-build-dir-mat$SLURM_NTASKS"
 
 echo "Compiling naive algorithm:"
 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=nvc -DNAIVE=ON -S . -B $CMAKE_BUILD_DIR
