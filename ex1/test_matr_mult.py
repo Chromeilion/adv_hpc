@@ -77,7 +77,7 @@ def test_strong(run_params: RunParams, runner: MatRunner, size: int) -> dict[int
     no_tests = 5
     print(f"Testing with {run_params.max_nodes} nodes and matrix size {size}", flush=True)
     for test_no in range(no_tests):
-        print(f"Runing test {test_no} of {run_params.max_nodes}", flush=True)
+        print(f"Runing test {test_no} of {no_tests}", flush=True)
         test_res.append(runner.run(size, run_params.max_nodes)[0])
     return test_res
 
