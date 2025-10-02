@@ -7,7 +7,6 @@
 #include <openacc.h>
 #include <time.h>
 #ifdef USE_BLAS
-//#include <cblas.h>
 #include <cblas.h>
 #endif
 #ifdef USE_GPU
