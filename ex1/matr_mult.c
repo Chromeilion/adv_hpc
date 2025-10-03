@@ -136,15 +136,12 @@ int main( int argc, char * argv[] ){
 #endif
 
 #ifdef NAIVE
-        #pragma acc loop independent collapse(2)
+        #pragma acc parallel loop collapse(2) present( mat_a, res, buf)
         for (int i = 0; i < n_rows_loc; ++i) {
             for (int j = 0; j < n_rows_loc; ++j) {
-                double sum = 0.0;
-                #pragma acc loop independent reduction(+: sum)
                 for (int k = 0; k < n_cols; ++k) {
-                    sum += mat_a[i * n_cols + k] * buf[k * n_rows_loc + j];
+                    res[i * n_cols + (current_col + j)] += mat_a[i * n_cols + k] * buf[k * n_rows_loc + j];
                 }
-                res[i * n_cols + (current_col + j)] = sum;
             }
         }
 #endif
@@ -186,6 +183,8 @@ int main( int argc, char * argv[] ){
     print_par( res, n_cols, rank, npes, 0);
 #endif
     MPI_Finalize();
+    // Required so that the compiler doesn't optimize out the res array...
+    fprintf(stdout, "%i %f s | %f algorithm complete\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC, res[0]);
     free(mat_a); free(mat_b); free(buf); free(res);
     return 0;
 }
