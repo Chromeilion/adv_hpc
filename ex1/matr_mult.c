@@ -7,30 +7,14 @@
 #include <openacc.h>
 #include <time.h>
 #ifdef USE_BLAS
-#include <cblas.h>
+#include <openblas/cblas.h>
 #endif
 #ifdef USE_GPU
 #include <cublas_v2.h>
 #endif
 
-#ifdef USE_GPU
-#define CHECK_CUDA(call) \
-    do { \
-        cublasStatus_t _st = (call); \
-        if (_st != CUBLAS_STATUS_SUCCESS) { \
-            int _mpi_inited = 0; \
-            MPI_Initialized(&_mpi_inited); \
-            int _rank = 0; \
-            if (_mpi_inited) MPI_Comm_rank(MPI_COMM_WORLD, &_rank); \
-            fprintf(stderr, "[rank %d] ERROR: cuBLAS call failed: %s:%d, status=%d\n", \
-                    _rank, __FILE__, __LINE__, (int)_st); \
-            if (_mpi_inited) MPI_Abort(MPI_COMM_WORLD, (int)_st); \
-            exit((int)_st); \
-        } \
-    } while (0)
-#endif
 
-void print_loc( double * mat, int n_row, int n_col){
+void print_loc( const double * mat, int n_row, int n_col){
     for( int i = 0; i < n_row; i++ ){
         for ( int j = 0; j < n_col; j++) {
             fprintf( stdout, "%.6g ", mat[i*n_col+j] );
@@ -39,9 +23,8 @@ void print_loc( double * mat, int n_row, int n_col){
     }
 }
 
-void print_par( double * mat, int size, int rank, int npes, int flipped){
+void print_par( const double * mat, int size, int rank, int npes, int flipped){
     MPI_Barrier( MPI_COMM_WORLD );
-    int count;
     if( rank )
         MPI_Send( mat, size*(size/npes), MPI_DOUBLE, 0, rank, MPI_COMM_WORLD );
     else{
@@ -50,7 +33,7 @@ void print_par( double * mat, int size, int rank, int npes, int flipped){
         else {print_loc( mat, size / npes, size );}
 
 
-        for( count = 1; count < npes; count ++){
+        for( int count = 1; count < npes; count ++){
             MPI_Recv( buf, size*(size/npes), MPI_DOUBLE, count, count, MPI_COMM_WORLD, MPI_STATUS_IGNORE );
             if (flipped) {print_loc( buf, size, size / npes );}
             else {print_loc( buf, size / npes, size );}
@@ -64,10 +47,10 @@ int main( int argc, char * argv[] ){
     clock_t start;
     int npes, rank;
     double * mat_a, * mat_b, * res, * buf;
-    long int n_cols, size_mata, size_matb, n_chunks, current_chunk;
-    long int n_rows, res_size, n_rows_loc, idx_matb, matb_sendcount;
-    long int stride_mata, stride_matb, current_col;
-    long int i, j, k;
+    long int n_cols, size_mata, size_matb, n_chunks;
+    long int n_rows, n_rows_loc, matb_sendcount;
+    long int current_col;
+    long int i, j;
     unsigned int size_buf;
     MPI_Datatype column_type;
     double alpha;
@@ -81,8 +64,7 @@ int main( int argc, char * argv[] ){
     }
 #ifdef USE_GPU
     cublasHandle_t handle;
-    cublasStatus_t status = cublasCreate(&handle);
-    CHECK_CUDA(status);
+    CHECK_CUDA(cublasCreate(&handle));
     int ngpu = acc_get_num_devices(acc_device_nvidia);
     int igpu = rank % ngpu;
     acc_set_device_num(igpu, acc_device_nvidia);
@@ -106,8 +88,6 @@ int main( int argc, char * argv[] ){
     size_matb = size_mata;
     matb_sendcount = n_rows_loc * n_rows_loc;
     size_buf = size_mata;
-    stride_mata = n_cols;
-    stride_matb = n_rows;
     MPI_Type_vector(n_rows_loc, n_rows_loc, n_cols, MPI_DOUBLE, &column_type);
     MPI_Type_commit(&column_type);
     mat_a = (double *) calloc( size_mata, sizeof(double) );
@@ -142,7 +122,7 @@ int main( int argc, char * argv[] ){
     #pragma acc update self ( mat_a[ 0 : size_mata ] )
     print_par( mat_a, n_cols, rank, npes, 0 );
 #endif
-    for ( current_chunk = 0; current_chunk < n_chunks; current_chunk++ ) {
+    for ( long int current_chunk = 0; current_chunk < n_chunks; current_chunk++ ) {
         current_col = current_chunk * n_rows_loc;
 
         #pragma acc host_data use_device(buf, mat_b)
@@ -173,10 +153,31 @@ int main( int argc, char * argv[] ){
         cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n_rows_loc, n_rows_loc, n_cols, alpha, mat_a, n_cols, buf, n_rows_loc, beta, &res[current_col], n_cols);
 #endif
 #ifdef USE_GPU
+        // I'm using the trick outlined here to make cublas work with row-major:
+        // https://leimao.github.io/blog/cuBLAS-Transpose-Column-Major-Relationship/
         #pragma acc host_data use_device(mat_a, buf, res)
-        CHECK_CUDA(cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n_rows_loc,
-                   n_rows_loc, n_cols, &alpha, buf, n_rows_loc, mat_a, n_cols,
-                   &beta, &res[current_col], n_cols));
+        {
+            cublasStatus_t stat = cublasDgemm(
+                handle,
+                CUBLAS_OP_N,
+                CUBLAS_OP_N,
+                n_rows_loc,
+                n_rows_loc,
+                n_cols,
+                &alpha,
+                buf,
+                n_rows_loc,
+                mat_a,
+                n_cols,
+                &beta,
+                &res[current_col],
+                n_cols
+            );
+            if (stat != CUBLAS_STATUS_SUCCESS) {
+                fprintf(stderr, "cublasDgemm failed with status %d\n", (int) stat);
+                MPI_Abort(MPI_COMM_WORLD, -1);
+            }
+        }
 #endif
         fprintf(stdout, "%i %f c | finished Matrix computation\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
     }
@@ -185,6 +186,7 @@ int main( int argc, char * argv[] ){
     print_par( res, n_cols, rank, npes, 0);
 #endif
     MPI_Finalize();
+    free(mat_a); free(mat_b); free(buf); free(res);
     return 0;
 }
 
