@@ -7,7 +7,7 @@
 #include <openacc.h>
 #include <time.h>
 #ifdef USE_BLAS
-#include <openblas/cblas.h>
+#include <cblas.h>
 #endif
 #ifdef USE_GPU
 #include <cublas_v2.h>
@@ -63,12 +63,12 @@ int main( int argc, char * argv[] ){
         return 1;
     }
 #ifdef USE_GPU
-    cublasHandle_t handle;
-    CHECK_CUDA(cublasCreate(&handle));
     int ngpu = acc_get_num_devices(acc_device_nvidia);
     int igpu = rank % ngpu;
     acc_set_device_num(igpu, acc_device_nvidia);
     acc_init(acc_device_nvidia);
+    cublasHandle_t handle;
+    cublasCreate(&handle);
 #endif
     alpha = 1;
     beta = 0;
