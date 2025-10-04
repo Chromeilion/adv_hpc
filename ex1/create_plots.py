@@ -27,7 +27,10 @@ def parse_output(mat_out: str) -> dict[str, float]:
     for line in lines:
         if "|" not in line:
             continue
-        info, msg = line.split("|")
+        try:
+            info, msg = line.split("|")
+        except ValueError:
+            continue
         split_info = info[:-1].split(" ")
         if len(split_info) < 3:
             continue
@@ -72,7 +75,7 @@ def make_plots(base_title: str, res: dict[str, dict[str, float]],
         eff_y = np.divide(ref, denom, out=np.ones_like(denom), where=denom != 0)
         ax.plot(x, eff_y)
         ax.xaxis.set_ticks(x)
-        ax.set_ylabel("Efficiency")
+        ax.set_ylabel("Speedup")
     else:
         ax.plot(x, serial, label="Serial")
         ax.plot(x, mpi, label="MPI")
@@ -150,7 +153,7 @@ def main(output_folder: PathLike | str):
 
     # Configuration consistent with make_plots.py
     data_dir = Path("./results")
-    variations = ["blas", "gpu", "naive"]
+    variations = ["blas", "gpu", "naive", "nc_naive"]
     procs = [4, 8, 16, 32, 64, 128]
 
     # data[variation][proc][task_key] -> list of parsed dicts

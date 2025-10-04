@@ -90,8 +90,8 @@ def main(binary_loc: str, output_file: str, g: bool = None):
         STRONG_SCALE_SIZE_BIG = 2**15
         STRONG_SCALE_SIZE_SMALL = 2**14
     else:
-        STRONG_SCALE_SIZE_BIG = 2**13
-        STRONG_SCALE_SIZE_SMALL =  2**12
+        STRONG_SCALE_SIZE_BIG = 2**15
+        STRONG_SCALE_SIZE_SMALL =  2**14
     res = {
 #        "weak_N2": test_weak(run_params, runner),
         f"strong_{STRONG_SCALE_SIZE_SMALL}": test_strong(run_params, runner, STRONG_SCALE_SIZE_SMALL),
