@@ -7,7 +7,7 @@
 #include <openacc.h>
 #include <time.h>
 #ifdef USE_BLAS
-#include <cblas.h>
+#include <openblas/cblas.h>
 #endif
 #ifdef USE_GPU
 #include <cublas_v2.h>
@@ -32,7 +32,6 @@ void print_par( const double * mat, int size, int rank, int npes, int flipped){
         if (flipped) {print_loc( mat, size, size / npes );}
         else {print_loc( mat, size / npes, size );}
 
-
         for( int count = 1; count < npes; count ++){
             MPI_Recv( buf, size*(size/npes), MPI_DOUBLE, count, count, MPI_COMM_WORLD, MPI_STATUS_IGNORE );
             if (flipped) {print_loc( buf, size, size / npes );}
@@ -47,7 +46,7 @@ int main( int argc, char * argv[] ){
     clock_t start;
     int npes, rank;
     double * mat_a, * mat_b, * res, * buf;
-    long int n_cols, size_mata, size_matb, n_chunks;
+    long int n_cols, size_mata, size_matb, n_chunks, pad, global_size;
     long int n_rows, n_rows_loc, matb_sendcount;
     long int current_col;
     long int i, j;
@@ -72,13 +71,15 @@ int main( int argc, char * argv[] ){
 #endif
     alpha = 1;
     beta = 0;
-    n_rows = atoi(argv[1]);
-    n_cols = n_rows;
-    if (n_rows % npes != 0) {
-        fprintf(stdout, "The size of the matrix must be divisible by the number "
-                        "of processes!!!");
-        return 1;
+    global_size = atoi(argv[1]);
+    if (global_size % npes != 0) {
+        fprintf(stdout, "The size of the matrix is not divisible by the "
+                        "number of processes, this will incure some additional "
+                        "computational cost.\n");
     }
+    pad = (global_size % npes == 0) ? 0 : (npes - (global_size % npes));
+    n_cols = global_size + pad;
+    n_rows = global_size + pad;
     n_rows_loc = n_rows / npes;
     n_chunks = npes;
     MPI_Barrier( MPI_COMM_WORLD );
@@ -104,14 +105,22 @@ int main( int argc, char * argv[] ){
     for ( i = 0; i < n_rows_loc; i++ ) {
         for ( j = 0; j < n_cols; j++ ){
             long int global_i = rank * n_rows_loc + i;
-            mat_a[i*n_cols + j] = 0.02 * j + 1.0 + global_i;
+            if (global_i >= global_size || j >= global_size) {
+                mat_a[i*n_cols + j] = 0.;
+            } else {
+                mat_a[i*n_cols + j] = 0.02 * j + 1.0 + global_i;
+            }
         }
     }
     #pragma acc parallel loop collapse(2) present( mat_b )
     for ( i = 0; i < n_rows_loc; i++ ) {
         for( j = 0; j < n_cols; j++ ){
             long int global_i = rank * n_rows_loc + i;
-            mat_b[i*n_cols + j] = 0.003 * (j + 1) + 1.0 + global_i;
+            if (global_i >= global_size || j >= global_size) {
+                mat_b[i*n_cols + j] = 0.;
+            } else {
+                mat_b[i*n_cols + j] = 0.003 * (j + 1) + 1.0 + global_i;
+            }
         }
     }
     fprintf(stdout, "%i %f p | matricies filled with values\n", rank, (double)(clock()-start)/CLOCKS_PER_SEC);
@@ -137,10 +146,11 @@ int main( int argc, char * argv[] ){
 
 #ifdef NAIVE
         #pragma acc parallel loop collapse(2) present( mat_a, res, buf)
-        for (int i = 0; i < n_rows_loc; ++i) {
-            for (int j = 0; j < n_rows_loc; ++j) {
-                for (int k = 0; k < n_cols; ++k) {
-                    res[i * n_cols + (current_col + j)] += mat_a[i * n_cols + k] * buf[k * n_rows_loc + j];
+        for (i = 0; i < n_rows_loc; i++) {
+            for (int k = 0; k < n_cols; k++) {
+                double aik = mat_a[i * n_cols + k];
+                for (j = 0; j < n_rows_loc; j++) {
+                    res[i * n_cols + (current_col + j)] += aik * buf[k * n_rows_loc + j];
                 }
             }
         }
